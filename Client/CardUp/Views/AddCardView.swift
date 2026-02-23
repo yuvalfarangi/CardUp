@@ -502,7 +502,7 @@ struct ProcessingView: View {
                             .foregroundColor(.blue)
                             .symbolEffect(.variableColor.iterative, options: .repeating)
                         
-                        Text("Gemini AI")
+                        Text("CardUp doing its magic")
                             .font(.subheadline)
                             .fontWeight(.medium)
                             .foregroundColor(.blue)

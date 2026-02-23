@@ -228,3 +228,24 @@ extension Color {
         return String(format: "%06X", rgb)
     }
 }
+// MARK: - View Extensions
+
+/// Extension to View that provides utility modifiers for enhanced visual effects.
+extension View {
+    /// Applies a glass effect to the view (placeholder implementation).
+    ///
+    /// This modifier provides a placeholder for the Liquid Glass effect. In a production
+    /// environment, this would integrate with the actual Liquid Glass APIs available
+    /// in the latest iOS versions.
+    ///
+    /// - Parameters:
+    ///   - style: The style of glass effect to apply
+    ///   - shape: The shape to apply the effect within
+    ///
+    /// - Returns: A view with the glass effect applied (currently returns self).
+    func glassEffect<S: Shape>(_ style: Any, in shape: S) -> some View {
+        // Placeholder implementation - in production, this would use actual Liquid Glass APIs
+        return self
+    }
+}
+

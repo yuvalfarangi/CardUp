@@ -42,6 +42,9 @@ struct EditCardView: View {
     @State private var primaryColor: Color = .blue
     @State private var secondaryColor: Color = .white
     @State private var stripImageValidation: StripImageProcessor.ValidationResult?
+    @State private var showIconPicker = false
+    @State private var selectedIconName: String? = "creditcard.fill"
+    @State private var selectedIconColor: Color = .white
     
     init(card: Card, onSave: (() -> Void)? = nil) {
         self.card = card
@@ -49,123 +52,159 @@ struct EditCardView: View {
     }
     
     var body: some View {
+        mainContent
+    }
+    
+    private var mainContent: some View {
+        navigationView
+            .onAppear { loadCardData() }
+            .sheet(isPresented: $showIconPicker) {
+                SFSymbolIconPicker(selectedIcon: $selectedIconName, selectedIconColor: $selectedIconColor)
+            }
+            .sheet(isPresented: $showImagePicker) {
+                ImagePicker(image: $uncroppedImage, sourceType: imagePickerSourceType)
+            }
+            .onChange(of: uncroppedImage) { _, newValue in
+                if newValue != nil { showCropper = true }
+            }
+            .sheet(isPresented: $showCropper) {
+                cropperSheet
+            }
+            .onChange(of: selectedBackgroundImage) { _, newValue in
+                handleBackgroundImageChange(newValue)
+            }
+            .addPassToWallet(
+                passData: showAddToWallet ? card.pkpassData : nil,
+                onSuccess: handleWalletSuccess,
+                onError: handleWalletError
+            )
+            .alert("Regeneration Error", isPresented: $showRegenerateAlert) {
+                Button("OK") { regenerationError = nil }
+            } message: {
+                if let error = regenerationError { Text(error) }
+            }
+            .overlay {
+                if isRegenerating {
+                    regeneratingOverlay
+                }
+            }
+    }
+    
+    private var navigationView: some View {
         NavigationStack {
-            ScrollView {
-                VStack(spacing: 24) {
-                    PassPreviewSection(
-                        card: card,
-                        cardName: cardName,
-                        companyName: companyName,
-                        membershipNumber: membershipNumber,
-                        expirationDate: expirationDate,
-                        barcodeString: barcodeString,
-                        headerField: headerField,
-                        auxiliaryField1: auxiliaryField1,
-                        auxiliaryField2: auxiliaryField2,
-                        selectedBackgroundImage: selectedBackgroundImage,
-                        isBannerImageRemoved: isBannerImageRemoved,
-                        primaryColor: primaryColor,
-                        secondaryColor: secondaryColor
-                    )
-                    
-                    PassCustomizationSection(
-                        card: card,
-                        selectedBackgroundImage: selectedBackgroundImage,
-                        isBannerImageRemoved: isBannerImageRemoved,
-                        primaryColor: $primaryColor,
-                        secondaryColor: $secondaryColor,
-                        stripImageValidation: stripImageValidation,
-                        onSelectImage: { showImagePicker = true },
-                        onRemoveImage: {
-                            selectedBackgroundImage = nil
-                            isBannerImageRemoved = true
-                        }
-                    )
-                    
-                    CardInformationSection(
-                        cardName: $cardName,
-                        companyName: $companyName,
-                        headerField: $headerField,
-                        membershipNumber: $membershipNumber,
-                        expirationDate: $expirationDate,
-                        auxiliaryField1: $auxiliaryField1,
-                        auxiliaryField2: $auxiliaryField2,
-                        barcodeString: $barcodeString
-                    )
-                    
-                    ActionButtonsSection(
-                        onRegeneratePass: handleRegeneratePass,
-                        onAddToWallet: handleAddToWallet,
-                        hasValidPass: card.hasValidPass,
-                        isRegenerating: isRegenerating
-                    )
-                    
-                    Spacer(minLength: 32)
-                }
-                .padding(.horizontal, 16)
-                .padding(.top, 8)
-            }
-            .navigationTitle("Edit Card")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
-                    Button("Cancel") { dismiss() }
-                }
-                
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Save") { saveCard() }
-                        .fontWeight(.semibold)
-                }
-            }
-        }
-        .onAppear { loadCardData() }
-        .sheet(isPresented: $showImagePicker) {
-            ImagePicker(image: $uncroppedImage, sourceType: imagePickerSourceType)
-        }
-        .onChange(of: uncroppedImage) { _, newValue in
-            if newValue != nil { showCropper = true }
-        }
-        .sheet(isPresented: $showCropper) {
-            if let imageToCrop = uncroppedImage {
-                ImageCropperView(image: imageToCrop, aspectRatio: 1125.0 / 369.0) { croppedImage in
-                    selectedBackgroundImage = croppedImage
-                    isBannerImageRemoved = false
-                    uncroppedImage = nil
-                    showCropper = false
-                }
-            }
-        }
-        .onChange(of: selectedBackgroundImage) { _, newValue in
-            if let image = newValue {
-                stripImageValidation = StripImageProcessor.validateStripImage(image)
-            } else {
-                stripImageValidation = nil
-            }
-        }
-        .addPassToWallet(
-            passData: showAddToWallet ? card.pkpassData : nil,
-            onSuccess: handleWalletSuccess,
-            onError: handleWalletError
-        )
-        .alert("Regeneration Error", isPresented: $showRegenerateAlert) {
-            Button("OK") { regenerationError = nil }
-        } message: {
-            if let error = regenerationError { Text(error) }
-        }
-        .overlay {
-            if isRegenerating {
-                ZStack {
-                    Color.black.opacity(0.4).ignoresSafeArea()
-                    VStack(spacing: 16) {
-                        ProgressView().scaleEffect(1.5).tint(.white)
-                        Text("Regenerating pass...")
-                            .font(.headline)
-                            .foregroundColor(.white)
+            scrollContent
+                .navigationTitle("Edit Card")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .navigationBarLeading) {
+                        Button("Cancel") { dismiss() }
                     }
-                    .padding(32)
-                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+                    
+                    ToolbarItem(placement: .navigationBarTrailing) {
+                        Button("Save") { saveCard() }
+                            .fontWeight(.semibold)
+                    }
                 }
+        }
+    }
+    
+    private var scrollContent: some View {
+        ScrollView {
+            VStack(spacing: 24) {
+                PassPreviewSection(
+                    card: card,
+                    cardName: cardName,
+                    companyName: companyName,
+                    membershipNumber: membershipNumber,
+                    expirationDate: expirationDate,
+                    barcodeString: barcodeString,
+                    headerField: headerField,
+                    auxiliaryField1: auxiliaryField1,
+                    auxiliaryField2: auxiliaryField2,
+                    selectedBackgroundImage: selectedBackgroundImage,
+                    isBannerImageRemoved: isBannerImageRemoved,
+                    primaryColor: primaryColor,
+                    secondaryColor: secondaryColor,
+                    selectedIconName: selectedIconName ?? "creditcard.fill",
+                    selectedIconColor: selectedIconColor
+                )
+                
+                LogoIconSection(
+                    selectedIconName: selectedIconName ?? "creditcard.fill",
+                    selectedIconColor: selectedIconColor,
+                    onSelectIcon: { showIconPicker = true }
+                )
+                
+                PassCustomizationSection(
+                    card: card,
+                    selectedBackgroundImage: selectedBackgroundImage,
+                    isBannerImageRemoved: isBannerImageRemoved,
+                    primaryColor: $primaryColor,
+                    secondaryColor: $secondaryColor,
+                    stripImageValidation: stripImageValidation,
+                    onSelectImage: { showImagePicker = true },
+                    onRemoveImage: {
+                        selectedBackgroundImage = nil
+                        isBannerImageRemoved = true
+                    }
+                )
+                
+                CardInformationSection(
+                    cardName: $cardName,
+                    companyName: $companyName,
+                    headerField: $headerField,
+                    membershipNumber: $membershipNumber,
+                    expirationDate: $expirationDate,
+                    auxiliaryField1: $auxiliaryField1,
+                    auxiliaryField2: $auxiliaryField2,
+                    barcodeString: $barcodeString
+                )
+                
+                ActionButtonsSection(
+                    onRegeneratePass: handleRegeneratePass,
+                    onAddToWallet: handleAddToWallet,
+                    hasValidPass: card.hasValidPass,
+                    isRegenerating: isRegenerating
+                )
+                
+                Spacer(minLength: 32)
             }
+            .padding(.horizontal, 16)
+            .padding(.top, 8)
+        }
+    }
+    
+    @ViewBuilder
+    private var cropperSheet: some View {
+        if let imageToCrop = uncroppedImage {
+            ImageCropperView(image: imageToCrop, aspectRatio: 1125.0 / 432.0) { croppedImage in
+                selectedBackgroundImage = croppedImage
+                isBannerImageRemoved = false
+                uncroppedImage = nil
+                showCropper = false
+            }
+        }
+    }
+    
+    private var regeneratingOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.4).ignoresSafeArea()
+            VStack(spacing: 16) {
+                ProgressView().scaleEffect(1.5).tint(.white)
+                Text("Regenerating pass...")
+                    .font(.headline)
+                    .foregroundColor(.white)
+            }
+            .padding(32)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+        }
+    }
+    
+    private func handleBackgroundImageChange(_ newValue: UIImage?) {
+        if let image = newValue {
+            stripImageValidation = StripImageProcessor.validateStripImage(image)
+        } else {
+            stripImageValidation = nil
         }
     }
     
@@ -183,8 +222,11 @@ struct EditCardView: View {
         auxiliaryField2 = auxFields.indices.contains(1) ? auxFields[1].value : ""
         
         primaryColor = card.primaryColor
-        // Assuming Card model has a property for foreground color/secondary color
-        // secondaryColor = card.foregroundColor ?? .white
+        secondaryColor = card.foregroundUIColor
+        
+        // Load icon settings - use existing SF Symbol or default
+        selectedIconName = card.logoSFSymbol ?? "creditcard.fill"
+        selectedIconColor = card.logoColor
     }
     
     private func saveCard() {
@@ -245,6 +287,11 @@ struct EditCardView: View {
             card.bannerImageData = newBackgroundImage.jpegData(compressionQuality: 0.8)
         }
         
+        // Save SF Symbol icon settings (always save, never nil)
+        card.logoSFSymbol = selectedIconName ?? "creditcard.fill"
+        card.logoIconColor = selectedIconColor.toHex()
+        card.logoImageData = nil // Always clear image data since we only use SF Symbols
+        
         card.passDescription = cardName
         card.organizationName = companyName
         card.barcodeMessage = barcodeString
@@ -274,11 +321,8 @@ struct EditCardView: View {
         newColors.insert(selectedPrimaryHex, at: 0)
         card.dominantColorsHex = newColors
         card.backgroundColor = selectedPrimaryHex
-        
-        // Assuming Card model properties exist for secondary colors
-        // let selectedSecondaryHex = secondaryColor.toHex()
-        // card.foregroundColor = selectedSecondaryHex
-        // card.labelColor = secondaryColor.opacity(0.7).toHex()
+        card.foregroundColor = secondaryColor.toHex()
+        card.labelColor = secondaryColor.opacity(0.7).toHex()
     }
     
     private func handleAddToWallet() {
@@ -305,6 +349,73 @@ struct EditCardView: View {
     }
 }
 
+// MARK: - Logo Icon Section
+
+struct LogoIconSection: View {
+    let selectedIconName: String
+    let selectedIconColor: Color
+    let onSelectIcon: () -> Void
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Logo Icon")
+                .font(.title3)
+                .fontWeight(.semibold)
+            
+            Text("Choose an SF Symbol icon for your card logo")
+                .font(.caption)
+                .foregroundColor(.secondary)
+            
+            HStack(spacing: 16) {
+                // Icon preview
+                ZStack {
+                    Circle()
+                        .fill(Color(.systemGray6))
+                        .frame(width: 80, height: 80)
+                    
+                    Image(systemName: selectedIconName)
+                        .font(.system(size: 40))
+                        .foregroundColor(selectedIconColor)
+                }
+                .overlay {
+                    Circle()
+                        .stroke(Color(.separator), lineWidth: 1)
+                }
+                
+                VStack(alignment: .leading, spacing: 12) {
+                    Button(action: onSelectIcon) {
+                        HStack {
+                            Image(systemName: "sparkles")
+                                .foregroundColor(.blue)
+                            Text("Change Icon")
+                                .font(.subheadline)
+                                .fontWeight(.medium)
+                                .foregroundColor(.blue)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 10)
+                        .background(Color.blue.opacity(0.1))
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                    }
+                }
+            }
+            
+            HStack(spacing: 8) {
+                Image(systemName: "info.circle")
+                    .foregroundColor(.blue)
+                    .font(.caption)
+                Text("Using SF Symbol: \(selectedIconName)")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(Color.blue.opacity(0.1))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
+    }
+}
+
 // MARK: - Pass Preview Section
 
 struct PassPreviewSection: View {
@@ -321,6 +432,25 @@ struct PassPreviewSection: View {
     let isBannerImageRemoved: Bool
     let primaryColor: Color
     let secondaryColor: Color
+    let selectedIconName: String
+    let selectedIconColor: Color
+    
+    private var displayCompany: String {
+        companyName.isEmpty ? (card.organizationName.isEmpty ? "Company" : card.organizationName) : companyName
+    }
+    
+    private var displayCardName: String {
+        cardName.isEmpty ? (card.passDescription.isEmpty ? "Loyalty Card" : card.passDescription) : cardName
+    }
+    
+    private var displayMember: String {
+        let fallbackMember = card.primaryFields.first?.value
+        return membershipNumber.isEmpty ? (fallbackMember ?? "") : membershipNumber
+    }
+    
+    private var currentBarcodeString: String {
+        barcodeString.isEmpty ? card.barcodeMessage : barcodeString
+    }
     
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -334,33 +464,24 @@ struct PassPreviewSection: View {
                 
                 VStack(spacing: 0) {
                     HStack(alignment: .top, spacing: 12) {
-                        Group {
-                            if let logoImage = card.logoImage {
-                                Image(uiImage: logoImage)
-                                    .resizable()
-                                    .aspectRatio(contentMode: .fit)
-                            } else {
-                                ZStack {
-                                    Circle().fill(secondaryColor.opacity(0.3))
-                                    Image(systemName: "building.2.fill")
-                                        .font(.system(size: 20))
-                                        .foregroundColor(secondaryColor)
-                                }
-                            }
+                        // Always display SF Symbol icon
+                        ZStack {
+                            Circle().fill(secondaryColor.opacity(0.3))
+                            Image(systemName: selectedIconName)
+                                .font(.system(size: 26))
+                                .foregroundColor(selectedIconColor)
                         }
                         .frame(width: 50, height: 50)
                         .padding(.leading, 20)
                         .padding(.top, 20)
                         
                         VStack(alignment: .leading, spacing: 2) {
-                            let displayCompany = companyName.isEmpty ? (card.organizationName.isEmpty ? "Company" : card.organizationName) : companyName
                             Text(displayCompany)
                                 .font(.system(size: 17, weight: .semibold))
                                 .foregroundColor(secondaryColor)
                                 .lineLimit(1)
                                 .environment(\.layoutDirection, displayCompany.isRightToLeft ? .rightToLeft : .leftToRight)
                             
-                            let displayCardName = cardName.isEmpty ? (card.passDescription.isEmpty ? "Loyalty Card" : card.passDescription) : cardName
                             Text(displayCardName)
                                 .font(.system(size: 13))
                                 .foregroundColor(secondaryColor.opacity(0.9))
@@ -375,6 +496,9 @@ struct PassPreviewSection: View {
                     .frame(maxWidth: .infinity)
                     .background(primaryColor)
                     
+                    // Strip/Banner image section
+                    // For Generic passes, this displays at approximately 20% of pass height
+                    // Aspect ratio: 1125:432 (approximately 2.6:1)
                     Group {
                         if let stripImage = selectedBackgroundImage {
                             Image(uiImage: stripImage)
@@ -385,6 +509,7 @@ struct PassPreviewSection: View {
                                 .resizable()
                                 .aspectRatio(contentMode: .fill)
                         } else {
+                            // Fallback to gradient when no banner image is available
                             Rectangle()
                                 .fill(
                                     LinearGradient(
@@ -426,7 +551,6 @@ struct PassPreviewSection: View {
                                     .foregroundColor(secondaryColor.opacity(0.7))
                                     .tracking(0.5)
                                 
-                                let displayMember = membershipNumber.isEmpty ? (fallbackMember ?? "") : membershipNumber
                                 Text(displayMember)
                                     .font(.system(size: 28, weight: .regular))
                                     .foregroundColor(secondaryColor)
@@ -491,7 +615,6 @@ struct PassPreviewSection: View {
                         
                         Spacer()
                         
-                        let currentBarcodeString = barcodeString.isEmpty ? card.barcodeMessage : barcodeString
                         if !currentBarcodeString.isEmpty {
                             VStack(spacing: 8) {
                                 ZStack {
@@ -601,7 +724,9 @@ struct PassCustomizationSection: View {
                     
                     Spacer()
                     
-                    Text("1125×369")
+                    // Updated dimensions for Apple PassKit Generic pass strip image
+                    // The correct size is 1125 x 432 pixels (@3x resolution)
+                    Text("1125×432")
                         .font(.caption2)
                         .foregroundColor(.secondary)
                         .padding(.horizontal, 8)
@@ -646,7 +771,8 @@ struct PassCustomizationSection: View {
                                         Text("Tap to add banner image")
                                             .font(.caption2)
                                             .foregroundColor(.secondary)
-                                        Text("Recommended: 1125×369 pixels")
+                                        // Updated recommended dimensions for strip image
+                                        Text("Recommended: 1125×432 pixels")
                                             .font(.caption2)
                                             .foregroundColor(.secondary.opacity(0.7))
                                     }

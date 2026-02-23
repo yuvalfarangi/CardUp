@@ -573,7 +573,6 @@ extension ServerApi {
             print("  • Background Color: \(response.cardDetails.backgroundColor ?? "N/A")")
             print("  • Foreground Color: \(response.cardDetails.foregroundColor ?? "N/A")")
             print("  • Label Color: \(response.cardDetails.labelColor ?? "N/A")")
-            print("  • Design Image: \(response.designImage.prefix(50))...")
             
             // Log fields
             if let headerFields = response.cardDetails.headerFields, !headerFields.isEmpty {
@@ -666,6 +665,105 @@ extension ServerApi {
             throw error
         }
     }
+    
+    /// Generate a custom card design/banner image using Gemini AI
+    /// - Parameters:
+    ///   - cardDetails: The card details to use for design generation (organization name, colors, etc.)
+    ///   - imageData: Optional reference image to extract styling from
+    /// - Returns: Design image data response containing the generated banner
+    func generateCardDesign(
+        cardDetails: CardDesignRequest,
+        imageData: Data? = nil
+    ) async throws -> CardDesignResponse {
+        // Log the request being sent to Gemini
+        print("🎨 Sending card design generation request to Gemini AI")
+        print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        print("📋 Request Details:")
+        print("  • Endpoint: /api/gemini/cardDesignGenerating")
+        print("  • Method: POST (multipart/form-data)")
+        print("  • Organization: \(cardDetails.organizationName ?? "N/A")")
+        print("  • Description: \(cardDetails.description ?? "N/A")")
+        print("  • Background Color: \(cardDetails.backgroundColor ?? "N/A")")
+        print("  • Foreground Color: \(cardDetails.foregroundColor ?? "N/A")")
+        
+        if let imageData = imageData {
+            print("  • Reference Image Size: \(imageData.count) bytes (\(String(format: "%.2f", Double(imageData.count) / 1024.0)) KB)")
+            if let image = UIImage(data: imageData) {
+                print("  • Reference Image Dimensions: \(Int(image.size.width)) x \(Int(image.size.height)) pts")
+            }
+        } else {
+            print("  • Reference Image: None (using card details only)")
+        }
+        
+        print("  • Server URL: \(baseURL)")
+        print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        print("⏳ Waiting for Gemini AI to generate design...")
+        
+        do {
+            // Convert card details to JSON
+            let cardDetailsJSON = try encoder.encode(cardDetails)
+            guard let cardDetailsString = String(data: cardDetailsJSON, encoding: .utf8) else {
+                throw ServerApiError.decodingError(NSError(domain: "ServerApi", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to encode card details"]))
+            }
+            
+            // Build multipart fields
+            var fields = ["cardDetails": cardDetailsString]
+            
+            let response: CardDesignResponse
+            
+            if let imageData = imageData {
+                // If we have an image, send it along with the card details
+                response = try await postMultipart(
+                    endpoint: "/api/gemini/cardDesignGenerating",
+                    data: imageData,
+                    fileName: "reference.jpg",
+                    mimeType: "image/jpeg",
+                    additionalFields: fields
+                )
+            } else {
+                // If no image, just send card details as JSON
+                response = try await post(
+                    endpoint: "/api/gemini/cardDesignGenerating",
+                    body: cardDetails
+                )
+            }
+            
+            // Log the response received
+            print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+            print("✅ Gemini AI Design Generation Complete")
+            print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+            print("📊 Response Summary:")
+            print("  • Design Image: \(response.designImage.prefix(50))...")
+            print("  • Is Base64: \(response.designImage.hasPrefix("data:image"))")
+            print("  • Is URL: \(response.designImage.hasPrefix("http"))")
+            
+            if let message = response.message {
+                print("  • Message: \(message)")
+            }
+            
+            // Validate the design image
+            if response.designImage.isEmpty {
+                print("⚠️ Warning: Design image is empty")
+            } else {
+                print("✅ Design image generated successfully")
+            }
+            
+            print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+            
+            return response
+            
+        } catch {
+            print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+            print("❌ Gemini AI Design Generation Failed")
+            print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+            print("Error: \(error.localizedDescription)")
+            if let serverError = error as? ServerApiError {
+                print("Error Type: \(serverError)")
+            }
+            print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+            throw error
+        }
+    }
 }
 
 // MARK: - Data Transfer Objects (DTOs)
@@ -733,9 +831,6 @@ struct GeminiCardAnalysisResponse: Decodable {
     
     /// Card details in JSON format matching Apple PassKit requirements
     let cardDetails: GeminiCardDetails
-    
-    /// URL or base64-encoded image of the generated graphic design
-    let designImage: String
     
     /// Optional error message if processing had issues
     let message: String?
@@ -892,3 +987,39 @@ struct EventInfo: Codable {
     let gateInfo: String?
 }
 
+// MARK: - Card Design Generation Types
+
+/// Request for generating a custom card design/banner image
+struct CardDesignRequest: Encodable {
+    /// Organization name to display on the card
+    let organizationName: String?
+    
+    /// Pass description
+    let description: String?
+    
+    /// Logo text to include in the design
+    let logoText: String?
+    
+    /// Background color in hex format (e.g., "#3B82F6")
+    let backgroundColor: String?
+    
+    /// Foreground color in hex format (e.g., "#FFFFFF")
+    let foregroundColor: String?
+    
+    /// Optional theme or style hints for the AI (e.g., "modern", "elegant", "playful")
+    let designStyle: String?
+    
+    /// Optional additional context or requirements
+    let additionalContext: String?
+}
+
+/// Response from card design generation
+struct CardDesignResponse: Decodable {
+    /// URL or base64-encoded image of the generated design
+    /// Format: Either "data:image/png;base64,..." or "https://..."
+    /// Expected size: 1125 x 432 pixels (@3x resolution) for Generic passes
+    let designImage: String
+    
+    /// Optional message about the generation process
+    let message: String?
+}

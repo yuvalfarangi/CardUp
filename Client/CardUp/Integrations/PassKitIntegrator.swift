@@ -37,7 +37,7 @@ final class PassKitIntegrator {
             barcodeString: card.barcodeMessage,
             barcodeFormat: card.barcodeFormat,
             dominantColors: card.dominantColorsHex,
-            logoImageData: card.logoImageData,
+            logoImageData: card.getLogoImageDataForPass(),
             bannerImageData: card.bannerImageData,
             membershipNumber: extractedData.membershipNumber,
             expirationDate: extractedData.expirationDate,
@@ -101,7 +101,7 @@ final class PassKitIntegrator {
             backFields: card.backFields,
             
             // Images
-            logoImageData: card.logoImageData,
+            logoImageData: card.getLogoImageDataForPass(),
             bannerImageData: card.bannerImageData,
             
             // Dates

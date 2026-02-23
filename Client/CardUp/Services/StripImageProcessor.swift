@@ -13,24 +13,30 @@ struct StripImageProcessor {
     
     // MARK: - Constants
     
-    /// Official Apple Wallet strip image dimensions
+    /// Official Apple Wallet strip image dimensions for Generic passes
+    /// Note: Generic passes use a different aspect ratio than store cards
+    /// Store cards use 1125x369 (@3x) with 3:1 ratio
+    /// Generic passes use 1125x432 (@3x) with approximately 2.6:1 ratio
     enum StripDimensions {
+        // @1x resolution (base)
         static let width1x: CGFloat = 375
-        static let height1x: CGFloat = 123
+        static let height1x: CGFloat = 144
         
+        // @2x resolution
         static let width2x: CGFloat = 750
-        static let height2x: CGFloat = 246
+        static let height2x: CGFloat = 288
         
+        // @3x resolution (recommended for best quality)
         static let width3x: CGFloat = 1125
-        static let height3x: CGFloat = 369
+        static let height3x: CGFloat = 432
         
-        /// Aspect ratio for strip images (3:1)
+        /// Aspect ratio for Generic pass strip images (approximately 2.604:1)
         static let aspectRatio: CGFloat = width3x / height3x
     }
     
     // MARK: - Image Validation
     
-    /// Validates if an image meets strip image requirements
+    /// Validates if an image meets strip image requirements for Generic passes
     /// - Parameter image: The image to validate
     /// - Returns: Validation result with details
     static func validateStripImage(_ image: UIImage) -> ValidationResult {
@@ -42,27 +48,29 @@ struct StripImageProcessor {
         let height = CGFloat(cgImage.height)
         let actualRatio = width / height
         
-        // Check if aspect ratio is approximately 3:1
+        // Check if aspect ratio is approximately 2.604:1 (1125:432)
         let expectedRatio = StripDimensions.aspectRatio
-        let tolerance: CGFloat = 0.05 // 5% tolerance
+        let tolerance: CGFloat = 0.1 // 10% tolerance for flexibility
         
         guard abs(actualRatio - expectedRatio) / expectedRatio <= tolerance else {
-            return .invalid(reason: "Aspect ratio should be 3:1 (1125×369). Current: \(Int(width))×\(Int(height))")
+            let expectedRatioFormatted = String(format: "%.1f:1", expectedRatio)
+            let actualRatioFormatted = String(format: "%.1f:1", actualRatio)
+            return .invalid(reason: "Aspect ratio should be \(expectedRatioFormatted) (1125×432). Current: \(Int(width))×\(Int(height)) (\(actualRatioFormatted))")
         }
         
-        // Check minimum resolution
-        let minWidth = StripDimensions.width2x // At least @2x
+        // Check minimum resolution (at least @2x for good quality)
+        let minWidth = StripDimensions.width2x // At least @2x (750px)
         if width < minWidth {
-            return .warning(reason: "Resolution is low. Recommended minimum: 750×246 pixels. Current: \(Int(width))×\(Int(height))")
+            return .warning(reason: "Resolution is low. Recommended minimum: 750×288 pixels. Current: \(Int(width))×\(Int(height))")
         }
         
-        // Check if at optimal @3x resolution
+        // Check if at optimal @3x resolution (1125x432)
         if width >= StripDimensions.width3x && height >= StripDimensions.height3x {
-            return .valid(message: "Perfect! Image meets @3x resolution (1125×369)")
+            return .valid(message: "Perfect! Image meets @3x resolution (1125×432)")
         } else if width >= StripDimensions.width2x && height >= StripDimensions.height2x {
-            return .valid(message: "Good quality @2x resolution (750×246)")
+            return .valid(message: "Good quality @2x resolution (750×288)")
         } else {
-            return .valid(message: "Acceptable @1x resolution (375×123)")
+            return .valid(message: "Acceptable @1x resolution (375×144)")
         }
     }
     
@@ -219,13 +227,21 @@ struct StripImageProcessor {
             
         case "generic":
             return DesignGuidelines(
-                title: "Generic Pass (No Strip)",
+                title: "Generic Pass Strip",
                 tips: [
-                    "Generic passes don't use strip images",
-                    "Use background.png instead for full-card background",
-                    "Consider using icon.png and logo.png for branding"
+                    "Use 1125×432 resolution (@3x) for best quality",
+                    "Maintain approximately 2.6:1 aspect ratio",
+                    "Keep center area clear for card information",
+                    "Reserve left side (100px) for logo overlay",
+                    "Ensure high contrast with text color",
+                    "Use PNG format with sRGB color space",
+                    "Consider brand colors and subtle patterns"
                 ],
-                examples: []
+                examples: [
+                    "Membership: Brand gradient with subtle texture",
+                    "Loyalty: Vibrant colors reflecting brand identity",
+                    "ID Card: Professional solid color or minimal gradient"
+                ]
             )
             
         case "coupon":
@@ -264,11 +280,12 @@ struct StripImageProcessor {
             return DesignGuidelines(
                 title: "Strip Image Guidelines",
                 tips: [
-                    "Use 1125×369 resolution (@3x)",
-                    "Maintain 3:1 aspect ratio",
-                    "Keep center and left areas clear",
+                    "Use 1125×432 resolution (@3x) for Generic passes",
+                    "Maintain approximately 2.6:1 aspect ratio",
+                    "Keep center and left areas clear for overlays",
                     "Ensure good contrast for text overlays",
-                    "Use PNG format with sRGB color space"
+                    "Use PNG format with sRGB color space",
+                    "Consider how design works with logo and text"
                 ],
                 examples: []
             )
@@ -299,7 +316,8 @@ struct StripImagePreviewView: View {
                 Image(uiImage: image)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
-                    .frame(width: 375, height: 123)
+                    // Updated dimensions for Generic pass strip (1125x432 @3x = 375x144 @1x)
+                    .frame(width: 375, height: 144)
                     .clipShape(RoundedRectangle(cornerRadius: 12))
                 
                 HStack(alignment: .top, spacing: 12) {

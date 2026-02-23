@@ -119,6 +119,12 @@ final class Card {
     /// Logo image data (icon displayed on the pass)
     var logoImageData: Data?
     
+    /// SF Symbol icon name for logo (alternative to logoImageData)
+    var logoSFSymbol: String?
+    
+    /// Logo icon color in hex format (for SF Symbol rendering)
+    var logoIconColor: String?
+    
     /// Banner/strip image data (background image for the pass)
     var bannerImageData: Data?
     
@@ -168,6 +174,8 @@ final class Card {
         backFieldsJson: String = "[]",
         headerFieldsJson: String = "[]",
         logoImageData: Data? = nil,
+        logoSFSymbol: String? = nil,
+        logoIconColor: String? = nil,
         bannerImageData: Data? = nil,
         expirationDate: String? = nil,
         relevantDate: String? = nil,
@@ -196,6 +204,8 @@ final class Card {
         self.backFieldsJson = backFieldsJson
         self.headerFieldsJson = headerFieldsJson
         self.logoImageData = logoImageData
+        self.logoSFSymbol = logoSFSymbol
+        self.logoIconColor = logoIconColor
         self.bannerImageData = bannerImageData
         self.expirationDate = expirationDate
         self.relevantDate = relevantDate
@@ -272,8 +282,51 @@ extension Card {
     
     /// Logo image as UIImage
     var logoImage: UIImage? {
+        // Prefer SF Symbol if available
+        if let symbolName = logoSFSymbol {
+            return generateSFSymbolImage(symbolName: symbolName)
+        }
+        // Fall back to stored image data
         guard let data = logoImageData else { return nil }
         return UIImage(data: data)
+    }
+    
+    /// Check if the card has a banner image
+    var hasBannerImage: Bool {
+        return bannerImageData != nil
+    }
+    
+    /// Get logo image data for pass generation (converts SF Symbol to PNG if needed)
+    func getLogoImageDataForPass() -> Data? {
+        // If using SF Symbol, generate PNG data
+        if let symbolName = logoSFSymbol {
+            guard let image = generateSFSymbolImage(symbolName: symbolName, size: 100) else { return nil }
+            return image.pngData()
+        }
+        // Otherwise use stored image data
+        return logoImageData
+    }
+    
+    /// Logo icon color as SwiftUI Color
+    var logoColor: Color {
+        if let colorHex = logoIconColor {
+            return Color(hex: colorHex) ?? foregroundUIColor
+        }
+        return foregroundUIColor
+    }
+    
+    /// Generate UIImage from SF Symbol
+    private func generateSFSymbolImage(symbolName: String, size: CGFloat = 50) -> UIImage? {
+        let config = UIImage.SymbolConfiguration(pointSize: size, weight: .regular)
+        let image = UIImage(systemName: symbolName, withConfiguration: config)
+        
+        // Apply color if specified
+        if let colorHex = logoIconColor, let color = Color(hex: colorHex) {
+            let uiColor = UIColor(color)
+            return image?.withTintColor(uiColor, renderingMode: .alwaysOriginal)
+        }
+        
+        return image
     }
     
     /// Banner image as UIImage

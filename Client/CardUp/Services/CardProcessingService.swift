@@ -21,8 +21,8 @@ import SwiftUI
 /// The service provides a complete pipeline for card processing with the following capabilities:
 ///
 /// - **AI-Powered Card Analysis**: Uses Google Gemini AI to extract structured data from card images
+/// - **AI-Powered Design Generation**: Generates professional banner images using a separate Gemini endpoint
 /// - **Barcode Detection**: Automatically identifies and extracts barcode formats (QR, PDF417, Code128, Aztec)
-/// - **Design Extraction**: Captures visual design elements including colors, logos, and branding
 /// - **Color Analysis**: Extracts dominant colors for consistent visual styling
 /// - **Pass Generation**: Creates Apple Wallet-compatible passes with all extracted information
 /// - **Progress Tracking**: Provides real-time progress updates during the multi-step processing pipeline
@@ -59,13 +59,14 @@ import SwiftUI
 /// The service executes the following steps in sequence:
 ///
 /// 1. **Image Preparation (10%)**: Compresses and validates the input image
-/// 2. **AI Analysis (30%)**: Sends image to Gemini AI for structured data extraction
-/// 3. **Design Download (50%)**: Retrieves generated design image from server
-/// 4. **Card Update (60%)**: Updates the Card model with extracted data
-/// 5. **Color Extraction (70%)**: Analyzes image for dominant colors
-/// 6. **Logo Processing (80%)**: Extracts and processes logo region
-/// 7. **Pass Generation (95%)**: Creates final .pkpass file
-/// 8. **Completion (100%)**: Pass is ready for Apple Wallet
+/// 2. **AI Data Extraction (30%)**: Sends image to `/api/gemini/cardDataExtraction` for structured data
+/// 3. **Card Update (45%)**: Updates the Card model with extracted data
+/// 4. **AI Design Generation (60%)**: Calls `/api/gemini/cardDesignGenerating` for banner image
+/// 5. **Design Download (65%)**: Retrieves generated design image
+/// 6. **Color Extraction (70%)**: Analyzes image for dominant colors
+/// 7. **Logo Processing (80%)**: Extracts and processes logo region
+/// 8. **Pass Generation (95%)**: Creates final .pkpass file
+/// 9. **Completion (100%)**: Pass is ready for Apple Wallet
 ///
 /// ## Architecture
 ///
@@ -78,10 +79,11 @@ import SwiftUI
 ///
 /// This service coordinates with several other components:
 ///
-/// - `ServerApi`: Handles communication with the Gemini AI backend
+/// - `ServerApi`: Handles communication with the Gemini AI backend (two separate endpoints)
 /// - `PassKitIntegrator`: Generates actual .pkpass files for Apple Wallet
 /// - `Card` model: SwiftData model storing all card information
-/// - `GeminiCardAnalysisResponse`: Structured response from AI analysis
+/// - `GeminiCardAnalysisResponse`: Structured response from AI data extraction
+/// - `CardDesignResponse`: Response from AI design generation
 ///
 /// ## Performance Considerations
 ///
@@ -97,7 +99,7 @@ import SwiftUI
 /// - Warning: The service maintains mutable state and is not designed for concurrent processing of
 ///            multiple cards. Create separate instances if parallel processing is needed.
 ///
-/// - SeeAlso: `ServerApi`, `PassKitIntegrator`, `Card`, `GeminiCardAnalysisResponse`
+/// - SeeAlso: `ServerApi`, `PassKitIntegrator`, `Card`, `GeminiCardAnalysisResponse`, `CardDesignResponse`
 @Observable
 final class CardProcessingService {
     // MARK: - Public Properties
@@ -190,23 +192,143 @@ final class CardProcessingService {
     
     // MARK: - Main Processing Pipeline (Gemini-Powered)
     
+    /// Generates a custom card design/banner image using Gemini AI
+    ///
+    /// This method is separate from the main card processing pipeline and can be called independently
+    /// to generate or regenerate the visual design/banner for a card. It leverages Gemini AI's
+    /// image generation capabilities to create a professional banner image based on card details.
+    ///
+    /// ## Use Cases
+    ///
+    /// - Generate initial banner during card creation
+    /// - Regenerate banner after editing card details (colors, organization name, etc.)
+    /// - Create banner when original card image didn't have good visual elements
+    /// - Update banner with new branding or style preferences
+    ///
+    /// ## Design Image Specifications
+    ///
+    /// The generated image should be:
+    /// - **Size**: 1125 x 432 pixels (@3x resolution) or 750 x 288 (@2x)
+    /// - **Format**: PNG or JPEG
+    /// - **Usage**: Displayed as the strip/banner image in Apple Wallet passes
+    ///
+    /// ## Processing Steps
+    ///
+    /// 1. Extracts relevant card details (organization, colors, description)
+    /// 2. Builds a CardDesignRequest with styling information
+    /// 3. Sends request to Gemini AI design generation endpoint
+    /// 4. Downloads or decodes the generated design image
+    /// 5. Updates the card's bannerImageData property
+    ///
+    /// ## Error Handling
+    ///
+    /// If design generation fails, the error is stored in the `error` property and the card's
+    /// banner remains unchanged. The card can still be used with just the background color.
+    ///
+    /// - Parameters:
+    ///   - card: The Card model to generate a design for
+    ///   - referenceImage: Optional reference image to help guide the design style
+    ///
+    /// - Note: This method updates observable properties and must be called from the main actor.
+    ///
+    /// - Example:
+    /// ```swift
+    /// let service = CardProcessingService()
+    /// await service.generateCardDesign(for: card)
+    ///
+    /// if let error = service.error {
+    ///     print("Design generation failed: \(error)")
+    /// } else {
+    ///     print("Banner image updated successfully")
+    /// }
+    /// ```
+    @MainActor
+    func generateCardDesign(for card: Card, referenceImage: UIImage? = nil) async {
+        isProcessing = true
+        error = nil
+        processingProgress = 0.0
+        
+        do {
+            // Step 1: Prepare card details for design generation (20%)
+            updateProgress(0.20, status: "Preparing design request...")
+            
+            let designRequest = CardDesignRequest(
+                organizationName: card.organizationName.isEmpty ? nil : card.organizationName,
+                description: card.passDescription.isEmpty ? nil : card.passDescription,
+                logoText: card.logoText,
+                backgroundColor: card.backgroundColor,
+                foregroundColor: card.foregroundColor,
+                designStyle: nil, // Could be extended to allow user to choose style
+                additionalContext: nil
+            )
+            
+            print("🎨 Generating card design:")
+            print("   Organization: \(designRequest.organizationName ?? "N/A")")
+            print("   Background: \(designRequest.backgroundColor ?? "N/A")")
+            print("   Foreground: \(designRequest.foregroundColor ?? "N/A")")
+            
+            // Step 2: Compress reference image if provided (40%)
+            var referenceImageData: Data? = nil
+            if let refImage = referenceImage {
+                updateProgress(0.40, status: "Preparing reference image...")
+                referenceImageData = compressImage(refImage)
+            }
+            
+            // Step 3: Send design generation request to Gemini (60%)
+            // Non-fatal: try? means any server/quota error silently skips the banner
+            updateProgress(0.60, status: "Generating design with AI...")
+            if let designResponse = try? await serverApi.generateCardDesign(
+                cardDetails: designRequest,
+                imageData: referenceImageData
+            ) {
+                print("✅ Design generation response received")
+                updateProgress(0.80, status: "Downloading design...")
+                let designImageData = try? await downloadDesignImage(from: designResponse.designImage)
+                updateProgress(1.0, status: "Saving banner image...")
+                card.bannerImageData = designImageData
+                if let bytes = designImageData {
+                    print("✅ Banner image updated: \(bytes.count) bytes")
+                } else {
+                    print("⚠️ No image data returned — banner will use background color")
+                }
+            } else {
+                updateProgress(1.0, status: "Complete")
+                card.bannerImageData = nil
+                print("⚠️ Design generation skipped — banner will use background color")
+            }
+
+        } catch {
+            // Only non-design errors reach here (e.g. image compression failure)
+            print("❌ Card design setup failed: \(error.localizedDescription)")
+        }
+        
+        isProcessing = false
+    }
+    
     /// Processes a card image through the complete AI-powered pipeline to generate an Apple Wallet pass.
     ///
     /// This is the main entry point for card processing. It orchestrates the entire workflow from raw
     /// image input to a fully functional Apple Wallet pass. The method handles all intermediate steps
-    /// including AI analysis, design extraction, color processing, and pass generation.
+    /// including AI analysis, design generation, color processing, and pass generation.
     ///
     /// ## Processing Steps
     ///
     /// The method executes the following pipeline:
     ///
     /// 1. **Image Preparation**: Validates and compresses the image for network transfer
-    /// 2. **AI Analysis**: Sends the image to Gemini AI for structured data extraction
-    /// 3. **Design Retrieval**: Downloads or decodes the generated design image
-    /// 4. **Data Mapping**: Updates the Card model with all extracted information
-    /// 5. **Color Analysis**: Extracts dominant colors if not already provided
-    /// 6. **Logo Extraction**: Identifies and processes the logo region
-    /// 7. **Pass Generation**: Creates the final .pkpass file
+    /// 2. **AI Analysis**: Sends the image to Gemini AI for structured data extraction (via `/api/gemini/cardDataExtraction`)
+    /// 3. **Card Model Update**: Updates the Card model with all extracted information
+    /// 4. **Design Generation**: Calls separate Gemini endpoint to generate banner image (via `/api/gemini/cardDesignGenerating`)
+    /// 5. **Design Retrieval**: Downloads or decodes the generated design image
+    /// 6. **Color Analysis**: Extracts dominant colors if not already provided
+    /// 7. **Logo Extraction**: Identifies and processes the logo region
+    /// 8. **Pass Generation**: Creates the final .pkpass file
+    ///
+    /// ## API Endpoints Used
+    ///
+    /// This method uses two separate Gemini AI endpoints:
+    /// - **Card Data Extraction** (`/api/gemini/cardDataExtraction`): Extracts text, barcodes, colors, and field data
+    /// - **Design Generation** (`/api/gemini/cardDesignGenerating`): Generates the visual banner/strip image
     ///
     /// ## Progress Tracking
     ///
@@ -286,16 +408,44 @@ final class CardProcessingService {
             
             extractedData = geminiResponse
             
-            // Step 3: Download design image (50%)
-            updateProgress(0.50, status: "Downloading design...")
-            let designImageData = try await downloadDesignImage(from: geminiResponse.designImage)
-            card.bannerImageData = designImageData
-            
-            print("🎨 Design image downloaded: \(designImageData?.count ?? 0) bytes")
-            
-            // Step 4: Update card model (60%)
-            updateProgress(0.60, status: "Saving card details...")
+            // Step 3: Update card model first so we have the details for design generation (45%)
+            updateProgress(0.45, status: "Saving card details...")
             updateCard(card, with: geminiResponse)
+            
+            // Step 4: Generate design/banner image using the separate design generation endpoint (65%)
+            // Always call the design generation endpoint - this is separate from card data extraction
+            updateProgress(0.50, status: "Generating card design...")
+            
+            let designRequest = CardDesignRequest(
+                organizationName: card.organizationName.isEmpty ? nil : card.organizationName,
+                description: card.passDescription.isEmpty ? nil : card.passDescription,
+                logoText: card.logoText,
+                backgroundColor: card.backgroundColor,
+                foregroundColor: card.foregroundColor,
+                designStyle: nil,
+                additionalContext: nil
+            )
+            
+            // Design generation is fully non-fatal: try? silently converts any error to nil
+            // so the pipeline always continues even if the server returns 500 / quota exceeded
+            if let designResponse = try? await serverApi.generateCardDesign(
+                cardDetails: designRequest,
+                imageData: imageData
+            ) {
+                updateProgress(0.60, status: "Downloading generated design...")
+                let designImageData = try? await downloadDesignImage(from: designResponse.designImage)
+                card.bannerImageData = designImageData
+                if let bytes = designImageData {
+                    print("🎨 Design generated and set as banner: \(bytes.count) bytes")
+                } else {
+                    print("⚠️ Design downloaded but no image data — banner will use background color")
+                }
+            } else {
+                card.bannerImageData = nil
+                print("⚠️ Design generation skipped — banner will use background color")
+            }
+            
+            updateProgress(0.65, status: "Design complete...")
             
             // Step 5: Generate colors if not provided (70%)
             updateProgress(0.70, status: "Analyzing colors...")
@@ -447,9 +597,18 @@ final class CardProcessingService {
         return UIGraphicsGetImageFromCurrentImageContext()
     }
     
-    /// Downloads or decodes a design image from either a URL or base64-encoded data URI.
+    /// Downloads or decodes a banner/strip design image from either a URL or base64-encoded data URI.
     ///
-    /// This method handles two different source formats returned by the Gemini API:
+    /// This method handles two different source formats returned by the Gemini design generation API
+    /// (from `/api/gemini/cardDesignGenerating` endpoint):
+    ///
+    /// ## Expected Image Specifications
+    ///
+    /// The design image should be a strip/banner image for Apple PassKit generic passes:
+    /// - **Size**: 1125 x 432 pixels (@3x resolution)
+    /// - **Alternative sizes**: 750 x 288 (@2x) or 375 x 144 (@1x)
+    /// - **Format**: PNG or JPEG
+    /// - **Usage**: Displayed as a horizontal strip below the logo/header section of the pass
     ///
     /// ## Data URI Format
     ///
@@ -466,17 +625,25 @@ final class CardProcessingService {
     /// https://example.com/generated-design.png
     /// ```
     ///
-    /// ## Error Handling
+    /// ## Empty or Invalid Source Handling
     ///
-    /// The method is resilient to failures:
+    /// The method gracefully handles various error scenarios:
+    /// - Empty string returns `nil` (pass will use background color)
     /// - Invalid URLs return `nil` rather than throwing
     /// - Network errors are caught and logged
     /// - HTTP errors (non-200 status codes) return `nil`
+    /// - Invalid or corrupted image data returns `nil`
     ///
     /// This allows the processing pipeline to continue even if design image retrieval fails.
+    /// When `nil` is returned, the pass will use the background color for the banner area.
     ///
-    /// - Parameter source: Either a data URI string or HTTP(S) URL string
-    /// - Returns: The image data if successfully retrieved/decoded, or `nil` on failure
+    /// ## Validation
+    ///
+    /// After downloading/decoding, the method validates that the data is a valid image
+    /// by attempting to create a UIImage. This ensures corrupted data doesn't get saved.
+    ///
+    /// - Parameter source: Either a data URI string or HTTP(S) URL string from the design generation response
+    /// - Returns: The image data if successfully retrieved/decoded and validated, or `nil` on failure
     ///
     /// - Note: This method uses standard URLSession which respects system proxy settings and SSL pinning.
     ///
@@ -489,40 +656,83 @@ final class CardProcessingService {
     /// // HTTP URL
     /// let urlString = "https://cdn.example.com/design.jpg"
     /// let imageData = try await downloadDesignImage(from: urlString)
+    ///
+    /// // Empty or missing
+    /// let empty = ""
+    /// let imageData = try await downloadDesignImage(from: empty) // Returns nil
     /// ```
     private func downloadDesignImage(from source: String) async throws -> Data? {
-        // Check if it's a base64 string
-        if source.hasPrefix("data:image") {
-            // Extract base64 data (format: "data:image/png;base64,...")
-            if let base64String = source.components(separatedBy: ",").last,
-               let imageData = Data(base64Encoded: base64String) {
-                print("📥 Decoded base64 image: \(imageData.count) bytes")
-                return imageData
-            }
-        }
-        
-        // Otherwise treat as URL
-        guard let url = URL(string: source) else {
-            print("⚠️ Invalid design image source: \(source)")
+        // Handle empty source - this is not an error, just means no design image
+        guard !source.isEmpty else {
+            print("ℹ️ No design image provided - banner will use background color")
             return nil
         }
         
-        do {
-            let (data, response) = try await URLSession.shared.data(from: url)
-            
-            guard let httpResponse = response as? HTTPURLResponse,
-                  (200...299).contains(httpResponse.statusCode) else {
-                print("⚠️ Failed to download design image: HTTP error")
+        var imageData: Data? = nil
+        
+        // Check if it's a base64 data URI (format: "data:image/png;base64,...")
+        if source.hasPrefix("data:image") {
+            // Extract base64 data after the comma
+            if let base64String = source.components(separatedBy: ",").last,
+               let decodedData = Data(base64Encoded: base64String) {
+                print("📥 Decoded base64 design image: \(decodedData.count) bytes")
+                imageData = decodedData
+            } else {
+                print("⚠️ Failed to decode base64 design image")
+                return nil
+            }
+        } else {
+            // Otherwise treat as URL
+            guard let url = URL(string: source) else {
+                print("⚠️ Invalid design image URL: \(source)")
                 return nil
             }
             
-            print("📥 Downloaded design image: \(data.count) bytes")
-            return data
-            
-        } catch {
-            print("⚠️ Failed to download design image: \(error)")
-            return nil
+            do {
+                let (data, response) = try await URLSession.shared.data(from: url)
+                
+                guard let httpResponse = response as? HTTPURLResponse,
+                      (200...299).contains(httpResponse.statusCode) else {
+                    print("⚠️ Failed to download design image: HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)")
+                    return nil
+                }
+                
+                print("📥 Downloaded design image from URL: \(data.count) bytes")
+                imageData = data
+                
+            } catch {
+                print("⚠️ Network error downloading design image: \(error.localizedDescription)")
+                return nil
+            }
         }
+        
+        // Validate that the data is actually a valid image
+        // This prevents corrupted data from being saved to the Card model
+        if let data = imageData {
+            if let image = UIImage(data: data) {
+                let dimensions = "\(Int(image.size.width))x\(Int(image.size.height))"
+                let scale = image.scale
+                let pixelDimensions = "\(Int(image.size.width * scale))x\(Int(image.size.height * scale))"
+                
+                print("✅ Valid design image: \(dimensions) pts @ \(scale)x = \(pixelDimensions) pixels")
+                
+                // Check if dimensions are reasonable for a strip image
+                // Expected: 1125x432 (@3x), 750x288 (@2x), or 375x144 (@1x)
+                // We'll be lenient and accept anything with an aspect ratio between 2:1 and 3:1
+                let aspectRatio = image.size.width / image.size.height
+                if aspectRatio < 2.0 || aspectRatio > 3.5 {
+                    print("⚠️ Warning: Design image aspect ratio (\(String(format: "%.2f", aspectRatio)):1) is unusual for strip images")
+                    print("   Recommended ratio is approximately 2.6:1 (1125x432)")
+                }
+                
+                return data
+            } else {
+                print("❌ Downloaded data is not a valid image format")
+                return nil
+            }
+        }
+        
+        return nil
     }
     
     /// Updates a Card model with data extracted from Gemini AI analysis.
