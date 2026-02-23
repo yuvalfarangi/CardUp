@@ -34,36 +34,6 @@
             endingLineNumber = "514"
             landmarkName = "analyzeCardWithGemini(imageData:)"
             landmarkType = "7">
-            <Locations>
-               <Location
-                  uuid = "3DD9B2F9-BD57-4BE7-ABE1-07DF62B20E32 - efa2644ea00ec2e8"
-                  shouldBeEnabled = "Yes"
-                  ignoreCount = "0"
-                  continueAfterRunningActions = "No"
-                  symbolName = "CardUp.ServerApi.analyzeCardWithGemini(imageData: Foundation.Data) async throws -&gt; CardUp.GeminiCardAnalysisResponse"
-                  moduleName = "CardUp.debug.dylib"
-                  usesParentBreakpointCondition = "Yes"
-                  urlString = "file:///Users/yuvalfarangi/Documents/Coding_Projects/CardUp/Client/CardUp/Integrations/ServerApi.swift"
-                  startingColumnNumber = "9223372036854775807"
-                  endingColumnNumber = "9223372036854775807"
-                  startingLineNumber = "514"
-                  endingLineNumber = "514">
-               </Location>
-               <Location
-                  uuid = "3DD9B2F9-BD57-4BE7-ABE1-07DF62B20E32 - 612f253b14f93ccf"
-                  shouldBeEnabled = "Yes"
-                  ignoreCount = "0"
-                  continueAfterRunningActions = "No"
-                  symbolName = "(1) suspend resume partial function for CardUp.ServerApi.analyzeCardWithGemini(imageData: Foundation.Data) async throws -&gt; CardUp.GeminiCardAnalysisResponse"
-                  moduleName = "CardUp.debug.dylib"
-                  usesParentBreakpointCondition = "Yes"
-                  urlString = "file:///Users/yuvalfarangi/Documents/Coding_Projects/CardUp/Client/CardUp/Integrations/ServerApi.swift"
-                  startingColumnNumber = "9223372036854775807"
-                  endingColumnNumber = "9223372036854775807"
-                  startingLineNumber = "514"
-                  endingLineNumber = "514">
-               </Location>
-            </Locations>
          </BreakpointContent>
       </BreakpointProxy>
    </Breakpoints>

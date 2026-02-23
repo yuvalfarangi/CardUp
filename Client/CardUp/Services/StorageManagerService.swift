@@ -81,9 +81,54 @@ final class StorageManagerService {
     }
     
     func updateCard(_ card: Card, with data: ExtractedCardData) throws {
-        let jsonData = try JSONEncoder().encode(data)
-        card.extractedTextJson = String(data: jsonData, encoding: .utf8) ?? ""
-        try saveCard(card)
+        // Legacy method for backward compatibility
+        // Convert ExtractedCardData to Card fields
+        if let companyName = data.companyName {
+            card.organizationName = companyName
+        }
+        
+        if let cardName = data.cardName {
+            card.passDescription = cardName
+        }
+        
+        if let barcodeString = data.barcodeString {
+            card.barcodeMessage = barcodeString
+        }
+        
+        if let barcodeFormat = data.barcodeFormat {
+            card.barcodeFormat = barcodeFormat
+        }
+        
+        // Create simple fields from additional data
+        var backFields: [PassField] = []
+        
+        if let membershipNumber = data.membershipNumber {
+            let field = PassField(key: "memberNumber", label: "Member Number", value: membershipNumber)
+            backFields.append(field)
+        }
+        
+        if let expirationDate = data.expirationDate {
+            let field = PassField(key: "expires", label: "Expires", value: expirationDate)
+            backFields.append(field)
+        }
+        
+        if let additionalText = data.additionalText {
+            for (index, text) in additionalText.enumerated() {
+                let field = PassField(key: "info\(index)", label: "Info", value: text)
+                backFields.append(field)
+            }
+        }
+        
+        if !backFields.isEmpty {
+            card.updateBackFields(backFields)
+        }
+        
+        // Save the card
+        guard let context = modelContext else {
+            throw StorageError.noContext
+        }
+        
+        try context.save()
     }
     
     // MARK: - User Management

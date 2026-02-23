@@ -1,4 +1,3 @@
-//
 //  EditCardView.swift
 //  CardUp
 //
@@ -23,14 +22,11 @@ struct EditCardView: View {
     @State private var membershipNumber: String = ""
     @State private var expirationDate: String = ""
     @State private var barcodeString: String = ""
-    @State private var selectedPassType: String = "storeCard"
     
     // Additional Apple Wallet fields
     @State private var headerField: String = ""
     @State private var auxiliaryField1: String = ""
     @State private var auxiliaryField2: String = ""
-    @State private var backField1: String = ""
-    @State private var backField2: String = ""
     
     // UI state
     @State private var isRegenerating = false
@@ -43,15 +39,9 @@ struct EditCardView: View {
     @State private var imagePickerSourceType: UIImagePickerController.SourceType = .photoLibrary
     @State private var selectedBackgroundImage: UIImage?
     @State private var isBannerImageRemoved = false
-    @State private var customBackgroundColor: Color = .blue
+    @State private var primaryColor: Color = .blue
+    @State private var secondaryColor: Color = .white
     @State private var stripImageValidation: StripImageProcessor.ValidationResult?
-    
-    let passTypes = [
-        ("storeCard", "Store Card", "For retail loyalty cards"),
-        ("generic", "Generic", "For membership and gym cards"),
-        ("coupon", "Coupon", "For discount cards"),
-        ("eventTicket", "Event Ticket", "For event admission")
-    ]
     
     init(card: Card, onSave: (() -> Void)? = nil) {
         self.card = card
@@ -74,27 +64,22 @@ struct EditCardView: View {
                         auxiliaryField2: auxiliaryField2,
                         selectedBackgroundImage: selectedBackgroundImage,
                         isBannerImageRemoved: isBannerImageRemoved,
-                        backgroundColor: customBackgroundColor
+                        primaryColor: primaryColor,
+                        secondaryColor: secondaryColor
                     )
                     
                     PassCustomizationSection(
                         card: card,
                         selectedBackgroundImage: selectedBackgroundImage,
                         isBannerImageRemoved: isBannerImageRemoved,
-                        customBackgroundColor: $customBackgroundColor,
+                        primaryColor: $primaryColor,
+                        secondaryColor: $secondaryColor,
                         stripImageValidation: stripImageValidation,
-                        onSelectImage: {
-                            showImagePicker = true
-                        },
+                        onSelectImage: { showImagePicker = true },
                         onRemoveImage: {
                             selectedBackgroundImage = nil
                             isBannerImageRemoved = true
                         }
-                    )
-                    
-                    PassTypeSection(
-                        selectedType: $selectedPassType,
-                        passTypes: passTypes
                     )
                     
                     CardInformationSection(
@@ -105,15 +90,13 @@ struct EditCardView: View {
                         expirationDate: $expirationDate,
                         auxiliaryField1: $auxiliaryField1,
                         auxiliaryField2: $auxiliaryField2,
-                        barcodeString: $barcodeString,
-                        backField1: $backField1,
-                        backField2: $backField2
+                        barcodeString: $barcodeString
                     )
                     
                     ActionButtonsSection(
                         onRegeneratePass: handleRegeneratePass,
                         onAddToWallet: handleAddToWallet,
-                        hasValidPass: card.pkpassData != nil,
+                        hasValidPass: card.hasValidPass,
                         isRegenerating: isRegenerating
                     )
                     
@@ -126,29 +109,21 @@ struct EditCardView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
-                    Button("Cancel") {
-                        dismiss()
-                    }
+                    Button("Cancel") { dismiss() }
                 }
                 
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Save") {
-                        saveCard()
-                    }
-                    .fontWeight(.semibold)
+                    Button("Save") { saveCard() }
+                        .fontWeight(.semibold)
                 }
             }
         }
-        .onAppear {
-            loadCardData()
-        }
+        .onAppear { loadCardData() }
         .sheet(isPresented: $showImagePicker) {
             ImagePicker(image: $uncroppedImage, sourceType: imagePickerSourceType)
         }
-        .onChange(of: uncroppedImage) { oldValue, newValue in
-            if newValue != nil {
-                showCropper = true
-            }
+        .onChange(of: uncroppedImage) { _, newValue in
+            if newValue != nil { showCropper = true }
         }
         .sheet(isPresented: $showCropper) {
             if let imageToCrop = uncroppedImage {
@@ -160,7 +135,7 @@ struct EditCardView: View {
                 }
             }
         }
-        .onChange(of: selectedBackgroundImage) { oldValue, newValue in
+        .onChange(of: selectedBackgroundImage) { _, newValue in
             if let image = newValue {
                 stripImageValidation = StripImageProcessor.validateStripImage(image)
             } else {
@@ -173,25 +148,16 @@ struct EditCardView: View {
             onError: handleWalletError
         )
         .alert("Regeneration Error", isPresented: $showRegenerateAlert) {
-            Button("OK") {
-                regenerationError = nil
-            }
+            Button("OK") { regenerationError = nil }
         } message: {
-            if let error = regenerationError {
-                Text(error)
-            }
+            if let error = regenerationError { Text(error) }
         }
         .overlay {
             if isRegenerating {
                 ZStack {
-                    Color.black.opacity(0.4)
-                        .ignoresSafeArea()
-                    
+                    Color.black.opacity(0.4).ignoresSafeArea()
                     VStack(spacing: 16) {
-                        ProgressView()
-                            .scaleEffect(1.5)
-                            .tint(.white)
-                        
+                        ProgressView().scaleEffect(1.5).tint(.white)
                         Text("Regenerating pass...")
                             .font(.headline)
                             .foregroundColor(.white)
@@ -204,28 +170,21 @@ struct EditCardView: View {
     }
     
     private func loadCardData() {
-        if let data = card.extractedData {
-            cardName = data.cardName ?? ""
-            companyName = data.companyName ?? ""
-            membershipNumber = data.membershipNumber ?? ""
-            expirationDate = data.expirationDate ?? ""
-            barcodeString = data.barcodeString ?? ""
-            
-            if let additionalText = data.additionalText {
-                headerField = additionalText.count > 0 ? additionalText[0] : ""
-                auxiliaryField1 = additionalText.count > 1 ? additionalText[1] : ""
-                auxiliaryField2 = additionalText.count > 2 ? additionalText[2] : ""
-                backField1 = additionalText.count > 3 ? additionalText[3] : ""
-                backField2 = additionalText.count > 4 ? additionalText[4] : ""
-            }
-        }
-        selectedPassType = card.passType
+        cardName = card.passDescription
+        companyName = card.organizationName
+        barcodeString = card.barcodeMessage
+        expirationDate = card.expirationDate ?? ""
         
-        if !card.dominantColorsHex.isEmpty {
-            if let firstColor = Color(hexString: card.dominantColorsHex[0]) {
-                customBackgroundColor = firstColor
-            }
-        }
+        headerField = card.headerFields.first?.value ?? ""
+        membershipNumber = card.primaryFields.first?.value ?? ""
+        
+        let auxFields = card.auxiliaryFields
+        auxiliaryField1 = auxFields.indices.contains(0) ? auxFields[0].value : ""
+        auxiliaryField2 = auxFields.indices.contains(1) ? auxFields[1].value : ""
+        
+        primaryColor = card.primaryColor
+        // Assuming Card model has a property for foreground color/secondary color
+        // secondaryColor = card.foregroundColor ?? .white
     }
     
     private func saveCard() {
@@ -243,19 +202,22 @@ struct EditCardView: View {
             do {
                 saveCardData()
                 
+                var additionalTextArray: [String] = []
+                if !headerField.isEmpty { additionalTextArray.append(headerField) }
+                if !auxiliaryField1.isEmpty { additionalTextArray.append(auxiliaryField1) }
+                if !auxiliaryField2.isEmpty { additionalTextArray.append(auxiliaryField2) }
+                
                 let extractedData = ExtractedCardData(
                     cardName: cardName.isEmpty ? nil : cardName,
                     companyName: companyName.isEmpty ? nil : companyName,
                     barcodeString: barcodeString.isEmpty ? nil : barcodeString,
                     barcodeFormat: card.barcodeFormat.isEmpty ? "Code128" : card.barcodeFormat,
-                    logoDescription: card.extractedData?.logoDescription,
-                    graphicDescription: card.extractedData?.graphicDescription,
+                    logoDescription: nil,
+                    graphicDescription: nil,
                     expirationDate: expirationDate.isEmpty ? nil : expirationDate,
                     membershipNumber: membershipNumber.isEmpty ? nil : membershipNumber,
-                    additionalText: card.extractedData?.additionalText
+                    additionalText: additionalTextArray.isEmpty ? nil : additionalTextArray
                 )
-                
-                card.passType = selectedPassType
                 
                 let passData = try await passKitIntegrator.generateWalletPass(for: card, with: extractedData)
                 
@@ -283,41 +245,40 @@ struct EditCardView: View {
             card.bannerImageData = newBackgroundImage.jpegData(compressionQuality: 0.8)
         }
         
-        var additionalTextArray: [String] = []
-        if !headerField.isEmpty { additionalTextArray.append(headerField) }
-        if !auxiliaryField1.isEmpty { additionalTextArray.append(auxiliaryField1) }
-        if !auxiliaryField2.isEmpty { additionalTextArray.append(auxiliaryField2) }
-        if !backField1.isEmpty { additionalTextArray.append(backField1) }
-        if !backField2.isEmpty { additionalTextArray.append(backField2) }
+        card.passDescription = cardName
+        card.organizationName = companyName
+        card.barcodeMessage = barcodeString
+        card.expirationDate = expirationDate.isEmpty ? nil : expirationDate
         
-        let updatedData = ExtractedCardData(
-            cardName: cardName.isEmpty ? nil : cardName,
-            companyName: companyName.isEmpty ? nil : companyName,
-            barcodeString: barcodeString.isEmpty ? nil : barcodeString,
-            barcodeFormat: card.barcodeFormat.isEmpty ? "Code128" : card.barcodeFormat,
-            logoDescription: card.extractedData?.logoDescription,
-            graphicDescription: card.extractedData?.graphicDescription,
-            expirationDate: expirationDate.isEmpty ? nil : expirationDate,
-            membershipNumber: membershipNumber.isEmpty ? nil : membershipNumber,
-            additionalText: additionalTextArray.isEmpty ? nil : additionalTextArray
-        )
+        card.passTypeIdentifier = "pass.com.example.generic"
         
-        card.passType = selectedPassType
+        var primary: [PassField] = []
+        if !membershipNumber.isEmpty { primary.append(PassField(key: "membershipNumber", label: "Member", value: membershipNumber)) }
+        card.updatePrimaryFields(primary)
         
+        var headers: [PassField] = []
+        if !headerField.isEmpty { headers.append(PassField(key: "header", label: "Info", value: headerField)) }
+        card.updateHeaderFields(headers)
+        
+        var aux: [PassField] = []
+        if !auxiliaryField1.isEmpty { aux.append(PassField(key: "aux1", label: "Info", value: auxiliaryField1)) }
+        if !auxiliaryField2.isEmpty { aux.append(PassField(key: "aux2", label: "Info", value: auxiliaryField2)) }
+        card.updateAuxiliaryFields(aux)
+        
+        let selectedPrimaryHex = primaryColor.toHex()
         var newColors = card.dominantColorsHex
-        let selectedColorHex = customBackgroundColor.toHex()
         
-        if let existingIndex = newColors.firstIndex(of: selectedColorHex) {
+        if let existingIndex = newColors.firstIndex(of: selectedPrimaryHex) {
             newColors.remove(at: existingIndex)
         }
-        newColors.insert(selectedColorHex, at: 0)
+        newColors.insert(selectedPrimaryHex, at: 0)
         card.dominantColorsHex = newColors
+        card.backgroundColor = selectedPrimaryHex
         
-        if let encoded = try? JSONEncoder().encode(updatedData),
-           let jsonString = String(data: encoded, encoding: .utf8) {
-            card.extractedTextJson = jsonString
-            card.barcodeString = barcodeString
-        }
+        // Assuming Card model properties exist for secondary colors
+        // let selectedSecondaryHex = secondaryColor.toHex()
+        // card.foregroundColor = selectedSecondaryHex
+        // card.labelColor = secondaryColor.opacity(0.7).toHex()
     }
     
     private func handleAddToWallet() {
@@ -358,7 +319,8 @@ struct PassPreviewSection: View {
     let auxiliaryField2: String
     let selectedBackgroundImage: UIImage?
     let isBannerImageRemoved: Bool
-    let backgroundColor: Color
+    let primaryColor: Color
+    let secondaryColor: Color
     
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -379,10 +341,10 @@ struct PassPreviewSection: View {
                                     .aspectRatio(contentMode: .fit)
                             } else {
                                 ZStack {
-                                    Circle().fill(Color.white.opacity(0.3))
+                                    Circle().fill(secondaryColor.opacity(0.3))
                                     Image(systemName: "building.2.fill")
                                         .font(.system(size: 20))
-                                        .foregroundColor(.white)
+                                        .foregroundColor(secondaryColor)
                                 }
                             }
                         }
@@ -391,19 +353,19 @@ struct PassPreviewSection: View {
                         .padding(.top, 20)
                         
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(companyName.isEmpty ? (card.extractedData?.companyName ?? "Company") : companyName)
+                            let displayCompany = companyName.isEmpty ? (card.organizationName.isEmpty ? "Company" : card.organizationName) : companyName
+                            Text(displayCompany)
                                 .font(.system(size: 17, weight: .semibold))
-                                .foregroundColor(.white)
+                                .foregroundColor(secondaryColor)
                                 .lineLimit(1)
-                                .environment(\.layoutDirection, 
-                                    (companyName.isEmpty ? (card.extractedData?.companyName ?? "") : companyName).isRightToLeft ? .rightToLeft : .leftToRight)
+                                .environment(\.layoutDirection, displayCompany.isRightToLeft ? .rightToLeft : .leftToRight)
                             
-                            Text(cardName.isEmpty ? (card.extractedData?.cardName ?? "Loyalty Card") : cardName)
+                            let displayCardName = cardName.isEmpty ? (card.passDescription.isEmpty ? "Loyalty Card" : card.passDescription) : cardName
+                            Text(displayCardName)
                                 .font(.system(size: 13))
-                                .foregroundColor(.white.opacity(0.9))
+                                .foregroundColor(secondaryColor.opacity(0.9))
                                 .lineLimit(1)
-                                .environment(\.layoutDirection,
-                                    (cardName.isEmpty ? (card.extractedData?.cardName ?? "") : cardName).isRightToLeft ? .rightToLeft : .leftToRight)
+                                .environment(\.layoutDirection, displayCardName.isRightToLeft ? .rightToLeft : .leftToRight)
                         }
                         .padding(.top, 24)
                         
@@ -411,7 +373,7 @@ struct PassPreviewSection: View {
                     }
                     .padding(.bottom, 12)
                     .frame(maxWidth: .infinity)
-                    .background(backgroundColor)
+                    .background(primaryColor)
                     
                     Group {
                         if let stripImage = selectedBackgroundImage {
@@ -426,7 +388,7 @@ struct PassPreviewSection: View {
                             Rectangle()
                                 .fill(
                                     LinearGradient(
-                                        colors: [backgroundColor, backgroundColor.opacity(0.8)],
+                                        colors: [primaryColor, primaryColor.opacity(0.8)],
                                         startPoint: .topLeading,
                                         endPoint: .bottomTrailing
                                     )
@@ -443,11 +405,11 @@ struct PassPreviewSection: View {
                                 Text("INFO")
                                     .font(.system(size: 11))
                                     .fontWeight(.medium)
-                                    .foregroundColor(.secondary)
+                                    .foregroundColor(secondaryColor.opacity(0.7))
                                     .tracking(0.5)
                                 Text(headerField)
                                     .font(.system(size: 15, weight: .regular))
-                                    .foregroundColor(.primary)
+                                    .foregroundColor(secondaryColor)
                                     .environment(\.layoutDirection, headerField.isRightToLeft ? .rightToLeft : .leftToRight)
                             }
                             .padding(.horizontal, 20)
@@ -455,18 +417,20 @@ struct PassPreviewSection: View {
                             .padding(.bottom, 8)
                         }
                         
-                        if !membershipNumber.isEmpty || card.extractedData?.membershipNumber != nil {
+                        let fallbackMember = card.primaryFields.first?.value
+                        if !membershipNumber.isEmpty || fallbackMember != nil {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text("MEMBER")
                                     .font(.system(size: 11))
                                     .fontWeight(.medium)
-                                    .foregroundColor(.secondary)
+                                    .foregroundColor(secondaryColor.opacity(0.7))
                                     .tracking(0.5)
-                                Text(membershipNumber.isEmpty ? (card.extractedData?.membershipNumber ?? "") : membershipNumber)
+                                
+                                let displayMember = membershipNumber.isEmpty ? (fallbackMember ?? "") : membershipNumber
+                                Text(displayMember)
                                     .font(.system(size: 28, weight: .regular))
-                                    .foregroundColor(.primary)
-                                    .environment(\.layoutDirection, 
-                                        (membershipNumber.isEmpty ? (card.extractedData?.membershipNumber ?? "") : membershipNumber).isRightToLeft ? .rightToLeft : .leftToRight)
+                                    .foregroundColor(secondaryColor)
+                                    .environment(\.layoutDirection, displayMember.isRightToLeft ? .rightToLeft : .leftToRight)
                             }
                             .padding(.horizontal, 20)
                             .padding(.top, headerField.isEmpty ? 20 : 8)
@@ -474,16 +438,16 @@ struct PassPreviewSection: View {
                         }
                         
                         HStack(spacing: 40) {
-                            if !expirationDate.isEmpty || card.extractedData?.expirationDate != nil {
+                            if !expirationDate.isEmpty || card.expirationDate != nil {
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text("EXPIRES")
                                         .font(.system(size: 11))
                                         .fontWeight(.medium)
-                                        .foregroundColor(.secondary)
+                                        .foregroundColor(secondaryColor.opacity(0.7))
                                         .tracking(0.5)
-                                    Text(expirationDate.isEmpty ? (card.extractedData?.expirationDate ?? "") : expirationDate)
+                                    Text(expirationDate.isEmpty ? (card.expirationDate ?? "") : expirationDate)
                                         .font(.system(size: 17, weight: .regular))
-                                        .foregroundColor(.primary)
+                                        .foregroundColor(secondaryColor)
                                 }
                             }
                             Spacer()
@@ -497,11 +461,11 @@ struct PassPreviewSection: View {
                                     Text("INFO")
                                         .font(.system(size: 11))
                                         .fontWeight(.medium)
-                                        .foregroundColor(.secondary)
+                                        .foregroundColor(secondaryColor.opacity(0.7))
                                         .tracking(0.5)
                                     Text(auxiliaryField1)
                                         .font(.system(size: 15, weight: .regular))
-                                        .foregroundColor(.primary)
+                                        .foregroundColor(secondaryColor)
                                         .lineLimit(1)
                                         .environment(\.layoutDirection, auxiliaryField1.isRightToLeft ? .rightToLeft : .leftToRight)
                                 }
@@ -511,11 +475,11 @@ struct PassPreviewSection: View {
                                     Text("INFO")
                                         .font(.system(size: 11))
                                         .fontWeight(.medium)
-                                        .foregroundColor(.secondary)
+                                        .foregroundColor(secondaryColor.opacity(0.7))
                                         .tracking(0.5)
                                     Text(auxiliaryField2)
                                         .font(.system(size: 15, weight: .regular))
-                                        .foregroundColor(.primary)
+                                        .foregroundColor(secondaryColor)
                                         .lineLimit(1)
                                         .environment(\.layoutDirection, auxiliaryField2.isRightToLeft ? .rightToLeft : .leftToRight)
                                 }
@@ -527,7 +491,7 @@ struct PassPreviewSection: View {
                         
                         Spacer()
                         
-                        let currentBarcodeString = barcodeString.isEmpty ? card.barcodeString : barcodeString
+                        let currentBarcodeString = barcodeString.isEmpty ? card.barcodeMessage : barcodeString
                         if !currentBarcodeString.isEmpty {
                             VStack(spacing: 8) {
                                 ZStack {
@@ -552,14 +516,14 @@ struct PassPreviewSection: View {
                                 
                                 Text(currentBarcodeString)
                                     .font(.system(size: 13, weight: .regular))
-                                    .foregroundColor(.primary)
+                                    .foregroundColor(secondaryColor)
                                     .tracking(1)
                             }
                             .padding(.bottom, 20)
                         }
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(backgroundColor)
+                    .background(primaryColor)
                 }
                 .frame(width: passWidth, height: passHeight)
                 .clipShape(RoundedRectangle(cornerRadius: 12))
@@ -573,9 +537,9 @@ struct PassPreviewSection: View {
             .frame(height: 450)
             
             HStack(spacing: 8) {
-                Image(systemName: card.pkpassData != nil ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
-                    .foregroundColor(card.pkpassData != nil ? .green : .orange)
-                Text(card.pkpassData != nil ? "Pass ready for Wallet" : "Changes require pass regeneration")
+                Image(systemName: card.hasValidPass ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                    .foregroundColor(card.hasValidPass ? .green : .orange)
+                Text(card.hasValidPass ? "Pass ready for Wallet" : "Changes require pass regeneration")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
@@ -584,13 +548,14 @@ struct PassPreviewSection: View {
     }
 }
 
-// MARK: - Pass Customization Section (Combined)
+// MARK: - Pass Customization Section
 
 struct PassCustomizationSection: View {
     let card: Card
     let selectedBackgroundImage: UIImage?
     let isBannerImageRemoved: Bool
-    @Binding var customBackgroundColor: Color
+    @Binding var primaryColor: Color
+    @Binding var secondaryColor: Color
     let stripImageValidation: StripImageProcessor.ValidationResult?
     let onSelectImage: () -> Void
     let onRemoveImage: () -> Void
@@ -601,70 +566,29 @@ struct PassCustomizationSection: View {
                 .font(.title3)
                 .fontWeight(.semibold)
             
-            Text("Customize the banner image and background color")
+            Text("Customize the banner image and colors")
                 .font(.caption)
                 .foregroundColor(.secondary)
             
-            VStack(alignment: .leading, spacing: 12) {
-                HStack {
-                    Text("Card Color")
-                        .font(.subheadline)
-                        .fontWeight(.semibold)
-                        .foregroundColor(.secondary)
-                    
-                    Spacer()
-                    
-                    Text("Detected from card")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(Color(.systemGray5))
-                        .clipShape(Capsule())
-                }
-                
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 12) {
-                        ForEach(Array(card.dominantColorsHex.enumerated()), id: \.offset) { index, hexColor in
-                            if let color = Color(hexString: hexColor) {
-                                ColorSelectionButton(
-                                    color: color,
-                                    isSelected: customBackgroundColor.toHex() == hexColor
-                                ) {
-                                    customBackgroundColor = color
-                                }
-                            }
-                        }
-                    }
-                    .padding(.horizontal, 4)
-                    .padding(.vertical, 4)
-                }
-                
-                HStack {
-                    Circle()
-                        .fill(customBackgroundColor)
-                        .frame(width: 40, height: 40)
-                        .shadow(color: customBackgroundColor.opacity(0.4), radius: 4, x: 0, y: 2)
-                    
-                    ColorPicker("Or choose custom color", selection: $customBackgroundColor, supportsOpacity: false)
-                        .font(.subheadline)
-                        .fontWeight(.medium)
-                }
-                .padding(12)
-                .background(Color(.systemGray6))
-                .clipShape(RoundedRectangle(cornerRadius: 12))
+            VStack(alignment: .leading, spacing: 16) {
+                ColorPickerGroup(
+                    title: "Card Background Color",
+                    dominantColorsHex: card.dominantColorsHex,
+                    selectedColor: $primaryColor
+                )
+                ColorPickerGroup(
+                    title: "Text & Fields Color",
+                    dominantColorsHex: card.dominantColorsHex,
+                    selectedColor: $secondaryColor
+                )
             }
             
             HStack {
-                Rectangle()
-                    .fill(Color(.separator))
-                    .frame(height: 1)
+                Rectangle().fill(Color(.separator)).frame(height: 1)
                 Text("AND")
                     .font(.caption)
                     .foregroundColor(.secondary)
-                Rectangle()
-                    .fill(Color(.separator))
-                    .frame(height: 1)
+                Rectangle().fill(Color(.separator)).frame(height: 1)
             }
             .padding(.vertical, 8)
             
@@ -733,8 +657,7 @@ struct PassCustomizationSection: View {
                     
                     Button(action: onSelectImage) {
                         HStack {
-                            Image(systemName: "photo")
-                                .foregroundColor(.blue)
+                            Image(systemName: "photo").foregroundColor(.blue)
                             Text(displayImage == nil ? "Add Banner Image" : "Change Banner Image")
                                 .font(.subheadline)
                                 .fontWeight(.medium)
@@ -759,10 +682,70 @@ struct PassCustomizationSection: View {
                 }
             }
             
-            Text("Note: The banner image appears in the strip area at the top of the pass. The card color is used for the header and overall pass background.")
+            Text("Note: The banner image appears in the strip area at the top of the pass. The primary color is used for the pass background, and the secondary color is used for the text.")
                 .font(.caption2)
                 .foregroundColor(.secondary)
                 .italic()
+        }
+    }
+}
+
+// MARK: - Color Picker Group
+
+struct ColorPickerGroup: View {
+    let title: String
+    let dominantColorsHex: [String]
+    @Binding var selectedColor: Color
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text(title)
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                    .foregroundColor(.secondary)
+                
+                Spacer()
+                
+                Text("Detected from card")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color(.systemGray5))
+                    .clipShape(Capsule())
+            }
+            
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 12) {
+                    ForEach(Array(dominantColorsHex.enumerated()), id: \.offset) { _, hexColor in
+                        if let color = Color(hex: hexColor) {
+                            ColorSelectionButton(
+                                color: color,
+                                isSelected: selectedColor.toHex() == hexColor
+                            ) {
+                                selectedColor = color
+                            }
+                        }
+                    }
+                }
+                .padding(.horizontal, 4)
+                .padding(.vertical, 4)
+            }
+            
+            HStack {
+                Circle()
+                    .fill(selectedColor)
+                    .frame(width: 40, height: 40)
+                    .shadow(color: selectedColor.opacity(0.4), radius: 4, x: 0, y: 2)
+                
+                ColorPicker("Or choose custom color", selection: $selectedColor, supportsOpacity: false)
+                    .font(.subheadline)
+                    .fontWeight(.medium)
+            }
+            .padding(12)
+            .background(Color(.systemGray6))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
         }
     }
 }
@@ -797,75 +780,6 @@ struct ColorSelectionButton: View {
     }
 }
 
-// MARK: - Pass Type Section
-
-struct PassTypeSection: View {
-    @Binding var selectedType: String
-    let passTypes: [(String, String, String)]
-    
-    var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Pass Type")
-                .font(.title3)
-                .fontWeight(.semibold)
-            
-            VStack(spacing: 8) {
-                ForEach(passTypes, id: \.0) { type, title, description in
-                    PassTypeRow(
-                        type: type,
-                        title: title,
-                        description: description,
-                        isSelected: selectedType == type
-                    ) {
-                        selectedType = type
-                    }
-                }
-            }
-        }
-    }
-}
-
-struct PassTypeRow: View {
-    let type: String
-    let title: String
-    let description: String
-    let isSelected: Bool
-    let onSelect: () -> Void
-    
-    var body: some View {
-        Button(action: onSelect) {
-            HStack(spacing: 12) {
-                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                    .foregroundColor(isSelected ? .blue : .secondary)
-                    .font(.title3)
-                
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(title)
-                        .font(.headline)
-                        .fontWeight(.medium)
-                        .foregroundColor(.primary)
-                    
-                    Text(description)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-                
-                Spacer()
-            }
-            .padding(12)
-            .background(
-                RoundedRectangle(cornerRadius: 12)
-                    .fill(isSelected ? .blue.opacity(0.1) : .clear)
-            )
-            .overlay {
-                RoundedRectangle(cornerRadius: 12)
-                    .stroke(isSelected ? .blue : .clear, lineWidth: 1)
-            }
-        }
-        .buttonStyle(PlainButtonStyle())
-    }
-}
-
 // MARK: - Card Information Section
 
 struct CardInformationSection: View {
@@ -877,8 +791,6 @@ struct CardInformationSection: View {
     @Binding var auxiliaryField1: String
     @Binding var auxiliaryField2: String
     @Binding var barcodeString: String
-    @Binding var backField1: String
-    @Binding var backField2: String
     
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -904,10 +816,6 @@ struct CardInformationSection: View {
                     EditField(title: "Barcode Data", text: $barcodeString, placeholder: "Barcode or QR code number")
                 }
                 
-                FieldGroup(title: "Back of Pass") {
-                    EditField(title: "Back Field 1", text: $backField1, placeholder: "Additional info for back (optional)")
-                    EditField(title: "Back Field 2", text: $backField2, placeholder: "Additional info for back (optional)")
-                }
             }
         }
     }
@@ -955,7 +863,7 @@ struct ActionButtonsSection: View {
                             )
                         )
                         .clipShape(Capsule())
-                        .glassEffect(.regular.tint(.green).interactive(), in: .capsule)
+                        .glassEffect(.regular.interactive(), in: .capsule)
                 }
                 .shadow(color: .green.opacity(0.3), radius: 8, x: 0, y: 4)
                 .disabled(isRegenerating)
@@ -964,8 +872,7 @@ struct ActionButtonsSection: View {
             Button(action: onRegeneratePass) {
                 HStack(spacing: 8) {
                     if isRegenerating {
-                        ProgressView()
-                            .tint(.primary)
+                        ProgressView().tint(.primary)
                     } else {
                         Image(systemName: "arrow.clockwise")
                     }
@@ -1003,7 +910,6 @@ struct EditField: View {
                 .padding(.vertical, 12)
                 .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
                 .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 12))
-                // Support both LTR and RTL text automatically
                 .environment(\.layoutDirection, text.isRightToLeft ? .rightToLeft : .leftToRight)
                 .multilineTextAlignment(text.isRightToLeft ? .trailing : .leading)
         }
@@ -1025,17 +931,11 @@ struct ImagePicker: UIViewControllerRepresentable {
     }
     
     func updateUIViewController(_ uiViewController: UIImagePickerController, context: Context) {}
-    
-    func makeCoordinator() -> Coordinator {
-        Coordinator(self)
-    }
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
     
     class Coordinator: NSObject, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
         let parent: ImagePicker
-        
-        init(_ parent: ImagePicker) {
-            self.parent = parent
-        }
+        init(_ parent: ImagePicker) { self.parent = parent }
         
         func imagePickerController(_ picker: UIImagePickerController, didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey : Any]) {
             if let image = info[.originalImage] as? UIImage {
@@ -1043,7 +943,6 @@ struct ImagePicker: UIViewControllerRepresentable {
             }
             parent.dismiss()
         }
-        
         func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
             parent.dismiss()
         }
@@ -1092,7 +991,7 @@ struct ImageCropperView: View {
                                 }
                                 .onEnded { _ in lastOffset = offset }
                         )
-                    
+                        
                     Rectangle()
                         .fill(.clear)
                         .frame(width: cropWidth, height: cropHeight)
@@ -1162,6 +1061,3 @@ struct ImageCropperView: View {
         }
     }
 }
-
-
-

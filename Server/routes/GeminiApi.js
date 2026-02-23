@@ -76,7 +76,7 @@ router.post('/generate', async (req, res) => {
 
 
 // The field name 'file' must match the key used in your Swift postMultipart function
-router.post('/chat', upload.single('file'), async (req, res) => {
+router.post('/cardDataExtraction', upload.single('file'), async (req, res) => {
     try {
         if (!req.file) {
             return res.status(400).json({ error: 'Image file is required' });
@@ -91,13 +91,29 @@ router.post('/chat', upload.single('file'), async (req, res) => {
             }
         };
 
-        const prompt = "Analyze this card and return the details in JSON format.";
-        const result = await model.generateContent([prompt, imagePart]);
-        const textResponse = result.response.text();
+        const prompt = `Extract all relevant information from the provided card. Return the data STRICTLY as a JSON object matching this exact structure expected by the client:
+{
+  "passFormat": "generic",
+  "cardDetails": {
+    "organizationName": "...",
+    "description": "...",
+    "primaryFields": [{"key": "...", "label": "...", "value": "..."}],
+    "secondaryFields": [],
+    "auxiliaryFields": [],
+    "backFields": []
+  },
+  "designImage": "",
+  "message": null
+}
+Ensure the PassKit fields (primaryFields, etc.) contain "key", "label", and "value" string properties. Do not include markdown formatting, explanations, or code blocks. Output only the raw JSON string.`;
 
-        // Ensure the response matches the GeminiCardAnalysisResponse struct expected by your Swift client
+        const result = await model.generateContent([prompt, imagePart]);
+        let textResponse = result.response.text();
+
+        textResponse = textResponse.replace(/^```json\n?/, '').replace(/\n?```$/, '').trim();
+
         console.log('Gemini result:', textResponse);
-        res.status(200).send(textResponse);
+        res.status(200).json(JSON.parse(textResponse));
 
     } catch (error) {
         console.error('Gemini error:', error);

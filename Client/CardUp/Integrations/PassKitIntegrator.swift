@@ -27,14 +27,14 @@ final class PassKitIntegrator {
         isGenerating = true
         defer { isGenerating = false }
         
-        // Create pass payload
+        // Create pass payload (using legacy structure)
         let payload = PassPayload(
             cardId: card.id.uuidString,
-            passType: card.passType,
-            organizationName: extractedData.companyName ?? "Unknown Company",
-            description: extractedData.cardName ?? "Loyalty Card",
-            logoText: extractedData.companyName ?? "",
-            barcodeString: card.barcodeString,
+            passType: "generic", // Default to generic
+            organizationName: extractedData.companyName ?? (card.organizationName.isEmpty ? "Unknown Company" : card.organizationName),
+            description: extractedData.cardName ?? (card.passDescription.isEmpty ? "Loyalty Card" : card.passDescription),
+            logoText: extractedData.companyName ?? card.organizationName,
+            barcodeString: card.barcodeMessage,
             barcodeFormat: card.barcodeFormat,
             dominantColors: card.dominantColorsHex,
             logoImageData: card.logoImageData,
@@ -50,7 +50,7 @@ final class PassKitIntegrator {
         
         if useMockPassGeneration {
             print("🔧 Using mock pass generation (CloudFlare Worker not configured)")
-            passData = try await generateMockPass(payload: payload, card: card)
+            passData = try await generateMockPassFromLegacy(payload: payload, card: card)
         } else {
             print("🌐 Using CloudFlare Worker for pass generation")
             passData = try await requestPassGeneration(payload: payload)
@@ -62,7 +62,7 @@ final class PassKitIntegrator {
         return passData
     }
     
-    /// Generate Apple Wallet pass from Gemini analysis
+    /// Generate Apple Wallet pass from Gemini analysis (Generic pass format)
     func generateWalletPassFromGemini(
         for card: Card,
         with geminiResponse: GeminiCardAnalysisResponse
@@ -72,21 +72,41 @@ final class PassKitIntegrator {
         
         let details = geminiResponse.cardDetails
         
-        // Build payload from Gemini response
-        let payload = PassPayload(
-            cardId: card.id.uuidString,
-            passType: geminiResponse.passFormat.rawValue,
-            organizationName: details.organizationName ?? card.displayName,
-            description: details.description ?? "Card",
-            logoText: details.logoText ?? details.organizationName ?? "",
-            barcodeString: details.barcodeMessage ?? card.barcodeString,
-            barcodeFormat: details.barcodeFormat ?? "PKBarcodeFormatQR",
-            dominantColors: card.dominantColorsHex,
+        // Build payload from Card model (which now contains all PassKit Generic fields)
+        let payload = GenericPassPayload(
+            // Pass identifiers
+            formatVersion: card.formatVersion,
+            passTypeIdentifier: card.passTypeIdentifier,
+            serialNumber: card.serialNumber,
+            teamIdentifier: "YOUR_TEAM_ID", // TODO: Replace with your actual Team ID
+            organizationName: card.organizationName,
+            description: card.passDescription,
+            logoText: card.logoText,
+            
+            // Barcode
+            barcodeMessage: card.barcodeMessage,
+            barcodeFormat: card.barcodeFormat,
+            barcodeMessageEncoding: card.barcodeMessageEncoding,
+            
+            // Colors
+            foregroundColor: card.foregroundColor,
+            backgroundColor: card.backgroundColor,
+            labelColor: card.labelColor,
+            
+            // Generic fields
+            headerFields: card.headerFields,
+            primaryFields: card.primaryFields,
+            secondaryFields: card.secondaryFields,
+            auxiliaryFields: card.auxiliaryFields,
+            backFields: card.backFields,
+            
+            // Images
             logoImageData: card.logoImageData,
             bannerImageData: card.bannerImageData,
-            membershipNumber: extractMembershipNumber(from: details),
-            expirationDate: details.expirationDate,
-            additionalFields: extractAdditionalFields(from: details)
+            
+            // Dates
+            expirationDate: card.expirationDate,
+            relevantDate: card.relevantDate
         )
         
         // Use mock pass generation for development/testing
@@ -94,10 +114,10 @@ final class PassKitIntegrator {
         
         if useMockPassGeneration {
             print("🔧 Using mock pass generation (CloudFlare Worker not configured)")
-            passData = try await generateMockPass(payload: payload, card: card)
+            passData = try await generateMockPassFromGeneric(payload: payload, card: card)
         } else {
             print("🌐 Using CloudFlare Worker for pass generation")
-            passData = try await requestPassGeneration(payload: payload)
+            passData = try await requestGenericPassGeneration(payload: payload)
         }
         
         // Store the generated pass data
@@ -106,47 +126,7 @@ final class PassKitIntegrator {
         return passData
     }
     
-    // Helper to extract membership number from various Gemini formats
-    private func extractMembershipNumber(from details: GeminiCardDetails) -> String? {
-        // Check store card specific info
-        if let storeInfo = details.storeCardInfo, let memberNumber = storeInfo.membershipNumber {
-            return memberNumber
-        }
-        
-        // Check primary fields
-        if let primaryFields = details.primaryFields {
-            for field in primaryFields {
-                if field.key.lowercased().contains("member") || 
-                   field.key.lowercased().contains("account") {
-                    return field.value
-                }
-            }
-        }
-        
-        return nil
-    }
-    
-    // Helper to extract additional fields from Gemini response
-    private func extractAdditionalFields(from details: GeminiCardDetails) -> [String] {
-        var fields: [String] = []
-        
-        // Combine all fields into additional text
-        let allFields = (details.headerFields ?? []) + 
-                       (details.primaryFields ?? []) + 
-                       (details.secondaryFields ?? []) + 
-                       (details.auxiliaryFields ?? [])
-        
-        for field in allFields {
-            if let label = field.label {
-                fields.append("\(label): \(field.value)")
-            } else {
-                fields.append(field.value)
-            }
-        }
-        
-        return Array(fields.prefix(5)) // Limit to 5 additional fields
-    }
-    
+    /// Add a pass to Apple Wallet using PKAddPassesViewController
     func addPassToWallet(passData: Data) throws -> PKAddPassesViewController? {
         // Check if this is mock data
         if let jsonObject = try? JSONSerialization.jsonObject(with: passData) as? [String: Any],
@@ -167,6 +147,8 @@ final class PassKitIntegrator {
         let addPassVC = PKAddPassesViewController(pass: pass)
         return addPassVC
     }
+    
+    // MARK: - Legacy Pass Generation (deprecated - use Generic format)
     
     private func requestPassGeneration(payload: PassPayload) async throws -> Data {
         // Log the payload being sent to server
@@ -229,16 +211,11 @@ final class PassKitIntegrator {
     
     // MARK: - Mock Pass Generation (Development Mode)
     
-    /// Generates a mock pass data for development/testing without CloudFlare Worker
-    /// This creates a placeholder Data object that simulates a pass
-    /// In production, replace this with actual CloudFlare Worker integration
-    private func generateMockPass(payload: PassPayload, card: Card) async throws -> Data {
+    /// Generates a mock pass from legacy PassPayload structure
+    /// This is for backward compatibility with the old generateWalletPass method
+    private func generateMockPassFromLegacy(payload: PassPayload, card: Card) async throws -> Data {
         // Simulate network delay
         try await Task.sleep(nanoseconds: 500_000_000) // 0.5 seconds
-        
-        // Create a mock pass representation
-        // Note: This is NOT a real .pkpass file (which requires Apple Developer signing)
-        // It's just mock data to allow the app to function without the backend
         
         // Build fields based on available data
         var primaryFields: [[String: Any]] = []
@@ -275,7 +252,7 @@ final class PassKitIntegrator {
         }
         
         // Prepare barcode data
-        var barcodeDict: [String: Any] = [
+        let barcodeDict: [String: Any] = [
             "message": payload.barcodeString,
             "format": mapBarcodeFormat(payload.barcodeFormat),
             "messageEncoding": "iso-8859-1"
@@ -293,7 +270,7 @@ final class PassKitIntegrator {
             "backgroundColor": payload.dominantColors.first ?? "rgb(59, 130, 246)",
             "labelColor": "rgb(255, 255, 255)",
             "barcode": barcodeDict,
-            "storeCard": [
+            "generic": [
                 "headerFields": [],
                 "primaryFields": primaryFields,
                 "secondaryFields": secondaryFields,
@@ -321,6 +298,163 @@ final class PassKitIntegrator {
         return jsonData
     }
     
+    /// Generates a mock pass data for development/testing without CloudFlare Worker
+    /// This creates a placeholder Data object that simulates a pass in Apple PassKit Generic format
+    /// In production, replace this with actual CloudFlare Worker integration
+    private func generateMockPassFromGeneric(payload: GenericPassPayload, card: Card) async throws -> Data {
+        // Simulate network delay
+        try await Task.sleep(nanoseconds: 500_000_000) // 0.5 seconds
+        
+        // Create a mock pass representation matching Apple PassKit Generic format
+        // Note: This is NOT a real .pkpass file (which requires Apple Developer signing)
+        // It's just mock data to allow the app to function without the backend
+        
+        // Convert PassField arrays to dictionaries for JSON
+        let headerFieldsDicts = payload.headerFields.map { fieldToDict($0) }
+        let primaryFieldsDicts = payload.primaryFields.map { fieldToDict($0) }
+        let secondaryFieldsDicts = payload.secondaryFields.map { fieldToDict($0) }
+        let auxiliaryFieldsDicts = payload.auxiliaryFields.map { fieldToDict($0) }
+        let backFieldsDicts = payload.backFields.map { fieldToDict($0) }
+        
+        // Build barcode dictionary
+        var barcodeDict: [String: Any] = [
+            "message": payload.barcodeMessage,
+            "format": payload.barcodeFormat,
+            "messageEncoding": payload.barcodeMessageEncoding
+        ]
+        
+        // Build generic section
+        var genericDict: [String: Any] = [:]
+        if !headerFieldsDicts.isEmpty {
+            genericDict["headerFields"] = headerFieldsDicts
+        }
+        if !primaryFieldsDicts.isEmpty {
+            genericDict["primaryFields"] = primaryFieldsDicts
+        }
+        if !secondaryFieldsDicts.isEmpty {
+            genericDict["secondaryFields"] = secondaryFieldsDicts
+        }
+        if !auxiliaryFieldsDicts.isEmpty {
+            genericDict["auxiliaryFields"] = auxiliaryFieldsDicts
+        }
+        if !backFieldsDicts.isEmpty {
+            genericDict["backFields"] = backFieldsDicts
+        }
+        
+        // Build complete pass dictionary
+        var mockPassDict: [String: Any] = [
+            "formatVersion": payload.formatVersion,
+            "passTypeIdentifier": payload.passTypeIdentifier,
+            "serialNumber": payload.serialNumber,
+            "teamIdentifier": payload.teamIdentifier,
+            "organizationName": payload.organizationName,
+            "description": payload.description,
+            "foregroundColor": payload.foregroundColor,
+            "backgroundColor": payload.backgroundColor,
+            "barcode": barcodeDict,
+            "generic": genericDict,
+            "_mock": true,
+            "_note": "This is mock data. Configure CloudFlare Worker for real .pkpass generation"
+        ]
+        
+        // Add optional fields
+        if let logoText = payload.logoText {
+            mockPassDict["logoText"] = logoText
+        }
+        if let labelColor = payload.labelColor {
+            mockPassDict["labelColor"] = labelColor
+        }
+        if let expirationDate = payload.expirationDate {
+            mockPassDict["expirationDate"] = expirationDate
+        }
+        if let relevantDate = payload.relevantDate {
+            mockPassDict["relevantDate"] = relevantDate
+        }
+        
+        // Convert to JSON data
+        let jsonData = try JSONSerialization.data(withJSONObject: mockPassDict, options: .prettyPrinted)
+        
+        return jsonData
+    }
+    
+    /// Convert a PassField to a dictionary for JSON serialization
+    private func fieldToDict(_ field: PassField) -> [String: Any] {
+        var dict: [String: Any] = [
+            "key": field.key,
+            "value": field.value
+        ]
+        
+        if let label = field.label {
+            dict["label"] = label
+        }
+        if let textAlignment = field.textAlignment {
+            dict["textAlignment"] = textAlignment
+        }
+        if let dateStyle = field.dateStyle {
+            dict["dateStyle"] = dateStyle
+        }
+        if let timeStyle = field.timeStyle {
+            dict["timeStyle"] = timeStyle
+        }
+        if let numberStyle = field.numberStyle {
+            dict["numberStyle"] = numberStyle
+        }
+        if let currencyCode = field.currencyCode {
+            dict["currencyCode"] = currencyCode
+        }
+        if let changeMessage = field.changeMessage {
+            dict["changeMessage"] = changeMessage
+        }
+        
+        return dict
+    }
+    
+    /// Request pass generation from CloudFlare Worker (Generic format)
+    private func requestGenericPassGeneration(payload: GenericPassPayload) async throws -> Data {
+        // Log the payload being sent to server
+        print("📤 Sending Generic pass generation request to server")
+        print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        print("📋 Generic Pass Payload Details:")
+        print("  • Pass Type: \(payload.passTypeIdentifier)")
+        print("  • Serial Number: \(payload.serialNumber)")
+        print("  • Organization: \(payload.organizationName)")
+        print("  • Description: \(payload.description)")
+        print("  • Logo Text: \(payload.logoText ?? "None")")
+        print("  • Barcode Message: \(payload.barcodeMessage)")
+        print("  • Barcode Format: \(payload.barcodeFormat)")
+        print("  • Foreground Color: \(payload.foregroundColor)")
+        print("  • Background Color: \(payload.backgroundColor)")
+        print("  • Label Color: \(payload.labelColor ?? "None")")
+        print("  • Header Fields: \(payload.headerFields.count)")
+        print("  • Primary Fields: \(payload.primaryFields.count)")
+        print("  • Secondary Fields: \(payload.secondaryFields.count)")
+        print("  • Auxiliary Fields: \(payload.auxiliaryFields.count)")
+        print("  • Back Fields: \(payload.backFields.count)")
+        print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        
+        // Use the ServerApi to request pass generation from the backend
+        do {
+            // Send the payload to the server's generate-pass endpoint
+            let passData: Data = try await ServerApi.shared.post(
+                endpoint: "/generate-pass",
+                body: payload
+            )
+            
+            print("✅ Server responded with pass data (\(passData.count) bytes)")
+            
+            return passData
+        } catch let error as ServerApiError {
+            print("❌ Server request failed: \(error)")
+            // Map ServerApiError to PassKitError
+            switch error {
+            case .networkError(let underlyingError):
+                throw PassKitError.networkError(underlyingError)
+            default:
+                throw PassKitError.serverError
+            }
+        }
+    }
+    
     private func mapBarcodeFormat(_ format: String) -> String {
         let normalized = format.lowercased()
         if normalized.contains("qr") {
@@ -337,8 +471,47 @@ final class PassKitIntegrator {
     }
 }
 
-// MARK: - Pass Payload Structure
+// MARK: - Pass Payload Structures
 
+/// Payload for Apple PassKit Generic pass format
+/// This structure matches the pass.json format required by Apple Wallet
+struct GenericPassPayload: Codable {
+    // MARK: - Required Pass Metadata
+    let formatVersion: Int
+    let passTypeIdentifier: String
+    let serialNumber: String
+    let teamIdentifier: String
+    let organizationName: String
+    let description: String
+    let logoText: String?
+    
+    // MARK: - Barcode
+    let barcodeMessage: String
+    let barcodeFormat: String
+    let barcodeMessageEncoding: String
+    
+    // MARK: - Visual Design
+    let foregroundColor: String
+    let backgroundColor: String
+    let labelColor: String?
+    
+    // MARK: - Generic Pass Fields
+    let headerFields: [PassField]
+    let primaryFields: [PassField]
+    let secondaryFields: [PassField]
+    let auxiliaryFields: [PassField]
+    let backFields: [PassField]
+    
+    // MARK: - Images
+    let logoImageData: Data?
+    let bannerImageData: Data?
+    
+    // MARK: - Dates
+    let expirationDate: String?
+    let relevantDate: String?
+}
+
+/// Legacy payload structure for backward compatibility
 struct PassPayload: Codable {
     let cardId: String
     let passType: String

@@ -528,73 +528,193 @@ final class CardProcessingService {
     /// Updates a Card model with data extracted from Gemini AI analysis.
     ///
     /// This method maps the structured Gemini response to the Card model's properties,
-    /// ensuring all extracted information is properly persisted. It handles various data
-    /// formats and provides sensible defaults when information is missing.
+    /// aligning with Apple PassKit's Generic pass format. It converts Gemini's field
+    /// structure into the JSON format expected by the Card model.
     ///
     /// ## Updated Properties
     ///
     /// The method updates the following Card properties:
     ///
-    /// - `passType`: Set from Gemini's format recommendation (storeCard, coupon, etc.)
-    /// - `barcodeString`: The extracted barcode data/message
+    /// - `passTypeIdentifier`: Set to generic pass format
+    /// - `organizationName`: Company/organization name from Gemini
+    /// - `passDescription`: Card description
+    /// - `logoText`: Text to display next to logo
+    /// - `barcodeMessage`: The extracted barcode data
     /// - `barcodeFormat`: Mapped to PassKit format constants
-    /// - `dominantColorsHex`: Background and foreground colors from Gemini
-    /// - `extractedTextJson`: Complete JSON representation of all card details
+    /// - `barcodeMessageEncoding`: Encoding for barcode (default: "iso-8859-1")
+    /// - `foregroundColor`: Converted from rgb() to hex format
+    /// - `backgroundColor`: Converted from rgb() to hex format
+    /// - `labelColor`: Converted from rgb() to hex format
+    /// - `primaryFieldsJson`: JSON array of primary fields
+    /// - `secondaryFieldsJson`: JSON array of secondary fields
+    /// - `auxiliaryFieldsJson`: JSON array of auxiliary fields
+    /// - `backFieldsJson`: JSON array of back fields
+    /// - `headerFieldsJson`: JSON array of header fields
+    /// - `expirationDate`: Expiration date in ISO 8601 format
+    /// - `relevantDate`: Relevant date in ISO 8601 format
     ///
-    /// ## Color Handling
+    /// ## Color Conversion
     ///
-    /// Colors from Gemini are stored in the card's `dominantColorsHex` array, but only if
-    /// they don't already exist in the array. This prevents duplicate color entries.
+    /// Colors from Gemini can be in rgb() format (e.g., "rgb(245, 197, 67)") or hex format.
+    /// This method converts rgb() to hex format for storage.
     ///
-    /// ## Barcode Format Mapping
+    /// ## Field Mapping
     ///
-    /// Gemini returns barcode formats as descriptive strings (e.g., "QR Code", "PDF417").
-    /// This method maps them to PassKit constants like "PKBarcodeFormatQR" using
-    /// `mapGeminiBarcodeFormat(_:)`.
+    /// Gemini's GeminiPassField structures are converted to Card's PassField structures
+    /// and stored as JSON strings for each field category.
     ///
     /// - Parameters:
     ///   - card: The Card model to update
     ///   - response: The complete Gemini analysis response containing extracted data
     ///
-    /// - Note: The method stores the complete `cardDetails` as JSON for maximum flexibility.
-    ///         This allows access to all extracted fields even if not explicitly mapped to Card properties.
+    /// - Note: The method preserves all field metadata including dateStyle, textAlignment, etc.
     ///
-    /// - SeeAlso: `mapGeminiBarcodeFormat(_:)`
+    /// - SeeAlso: `mapGeminiBarcodeFormat(_:)`, `convertColorToHex(_:)`
     private func updateCard(_ card: Card, with response: GeminiCardAnalysisResponse) {
         let details = response.cardDetails
         
-        // Pass type
-        card.passType = response.passFormat.rawValue
+        // Pass metadata
+        card.passTypeIdentifier = "pass.com.example.generic"
+        card.formatVersion = 1
         
-        // Barcode
+        // Organization and description
+        if let orgName = details.organizationName {
+            card.organizationName = orgName
+        }
+        
+        if let description = details.description {
+            card.passDescription = description
+        }
+        
+        if let logoText = details.logoText {
+            card.logoText = logoText
+        }
+        
+        // Barcode information
         if let barcodeMessage = details.barcodeMessage {
-            card.barcodeString = barcodeMessage
+            card.barcodeMessage = barcodeMessage
         }
         
         if let barcodeFormat = details.barcodeFormat {
             card.barcodeFormat = mapGeminiBarcodeFormat(barcodeFormat)
         }
         
-        // Colors
+        if let encoding = details.barcodeMessageEncoding {
+            card.barcodeMessageEncoding = encoding
+        }
+        
+        // Colors - convert from rgb() to hex format
         if let bgColor = details.backgroundColor {
-            if !card.dominantColorsHex.contains(bgColor) {
-                card.dominantColorsHex.append(bgColor)
+            card.backgroundColor = convertColorToHex(bgColor)
+            // Also add to dominantColorsHex for UI purposes
+            if !card.dominantColorsHex.contains(card.backgroundColor) {
+                card.dominantColorsHex.append(card.backgroundColor)
             }
         }
         
         if let fgColor = details.foregroundColor {
-            if !card.dominantColorsHex.contains(fgColor) {
-                card.dominantColorsHex.append(fgColor)
+            card.foregroundColor = convertColorToHex(fgColor)
+            // Also add to dominantColorsHex for UI purposes
+            if !card.dominantColorsHex.contains(card.foregroundColor) {
+                card.dominantColorsHex.append(card.foregroundColor)
             }
         }
         
-        // Store the full JSON response for later use
-        if let jsonData = try? JSONEncoder().encode(details),
-           let jsonString = String(data: jsonData, encoding: .utf8) {
-            card.extractedTextJson = jsonString
+        if let labelColor = details.labelColor {
+            card.labelColor = convertColorToHex(labelColor)
         }
         
-        print("📝 Card updated with Gemini data")
+        // Convert GeminiPassField arrays to PassField arrays and store as JSON
+        if let headerFields = details.headerFields {
+            card.updateHeaderFields(convertGeminiFieldsToPassFields(headerFields))
+        }
+        
+        if let primaryFields = details.primaryFields {
+            card.updatePrimaryFields(convertGeminiFieldsToPassFields(primaryFields))
+        }
+        
+        if let secondaryFields = details.secondaryFields {
+            card.updateSecondaryFields(convertGeminiFieldsToPassFields(secondaryFields))
+        }
+        
+        if let auxiliaryFields = details.auxiliaryFields {
+            card.updateAuxiliaryFields(convertGeminiFieldsToPassFields(auxiliaryFields))
+        }
+        
+        if let backFields = details.backFields {
+            card.updateBackFields(convertGeminiFieldsToPassFields(backFields))
+        }
+        
+        // Dates
+        if let expirationDate = details.expirationDate {
+            card.expirationDate = expirationDate
+        }
+        
+        if let relevantDate = details.relevantDate {
+            card.relevantDate = relevantDate
+        }
+        
+        print("📝 Card updated with Gemini data (PassKit Generic format)")
+    }
+    
+    /// Converts Gemini's field structure to Card's PassField structure
+    private func convertGeminiFieldsToPassFields(_ geminiFields: [GeminiPassField]) -> [PassField] {
+        return geminiFields.map { geminiField in
+            var passField = PassField(
+                key: geminiField.key,
+                label: geminiField.label,
+                value: geminiField.value,
+                textAlignment: geminiField.textAlignment
+            )
+            
+            // Copy additional properties
+            passField.dateStyle = geminiField.dateStyle
+            passField.timeStyle = geminiField.timeStyle
+            passField.numberStyle = geminiField.numberStyle
+            passField.currencyCode = geminiField.currencyCode
+            passField.changeMessage = geminiField.changeMessage
+            
+            return passField
+        }
+    }
+    
+    /// Converts color from rgb() format or hex to clean hex format
+    /// Examples:
+    /// - "rgb(245, 197, 67)" -> "#F5C543"
+    /// - "#F5C543" -> "#F5C543"
+    /// - "F5C543" -> "#F5C543"
+    private func convertColorToHex(_ color: String) -> String {
+        // If already in hex format, ensure it has # prefix
+        if color.hasPrefix("#") {
+            return color
+        }
+        
+        // If no # but looks like hex (6 or 8 characters), add #
+        if !color.contains("rgb") && (color.count == 6 || color.count == 8) {
+            return "#" + color
+        }
+        
+        // Parse rgb() format
+        if color.hasPrefix("rgb") {
+            // Extract numbers from rgb(r, g, b) or rgba(r, g, b, a)
+            let numbers = color
+                .replacingOccurrences(of: "rgb(", with: "")
+                .replacingOccurrences(of: "rgba(", with: "")
+                .replacingOccurrences(of: ")", with: "")
+                .replacingOccurrences(of: " ", with: "")
+                .split(separator: ",")
+                .compactMap { Int($0) }
+            
+            if numbers.count >= 3 {
+                let r = numbers[0]
+                let g = numbers[1]
+                let b = numbers[2]
+                return String(format: "#%02X%02X%02X", r, g, b)
+            }
+        }
+        
+        // Fallback - return as is
+        return color
     }
     
     /// Maps Gemini's barcode format strings to Apple PassKit barcode format constants.

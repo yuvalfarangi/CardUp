@@ -516,7 +516,7 @@ extension ServerApi {
         print("📤 Sending card scan request to Gemini AI")
         print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
         print("📋 Request Details:")
-        print("  • Endpoint: /api/gemini/chat")
+        print("  • Endpoint: /api/gemini/cardDataExtraction")
         print("  • Method: POST (multipart/form-data)")
         print("  • Image Size: \(imageData.count) bytes (\(String(format: "%.2f", Double(imageData.count) / 1024.0)) KB)")
         print("  • MIME Type: image/jpeg")
@@ -534,7 +534,7 @@ extension ServerApi {
         
         do {
             let response: GeminiCardAnalysisResponse = try await postMultipart(
-                endpoint: "/api/gemini/chat",
+                endpoint: "/api/gemini/cardDataExtraction",
                 data: imageData,
                 fileName: "card.jpg",
                 mimeType: "image/jpeg"
@@ -751,57 +751,118 @@ enum GeminiPassFormat: String, Codable {
 }
 
 /// Card details extracted and formatted by Gemini
+/// This structure aligns with Apple PassKit's Generic pass format
+/// Gemini AI should return JSON matching this exact structure
 struct GeminiCardDetails: Codable {
-    // Basic Information
+    // MARK: - Required Pass Metadata
+    
+    /// Organization name (e.g., "My gym name")
     let organizationName: String?
+    
+    /// Pass description (e.g., "Gym membership pass")
     let description: String?
+    
+    /// Text to display next to logo (e.g., "My gym")
     let logoText: String?
     
-    // Barcode Information
+    // MARK: - Barcode Information
+    
+    /// Barcode message/data (e.g., "12345678")
     let barcodeMessage: String?
-    let barcodeFormat: String? // "PKBarcodeFormatQR", "PKBarcodeFormatPDF417", "PKBarcodeFormatCode128", etc.
+    
+    /// Barcode format (e.g., "PKBarcodeFormatQR", "PKBarcodeFormatCode128", "PKBarcodeFormatPDF417")
+    let barcodeFormat: String?
+    
+    /// Alternative text for accessibility
     let barcodeAltText: String?
     
-    // Header Fields (for generic, store cards)
-    let headerFields: [PassField]?
+    /// Message encoding (typically "iso-8859-1")
+    let barcodeMessageEncoding: String?
     
-    // Primary Fields (main content)
-    let primaryFields: [PassField]?
+    // MARK: - Generic Pass Fields (Apple PassKit Structure)
     
-    // Secondary Fields (additional info)
-    let secondaryFields: [PassField]?
+    /// Header fields displayed at the top of the pass (optional)
+    /// Example: [{"key": "points", "label": "POINTS", "value": "1234"}]
+    let headerFields: [GeminiPassField]?
     
-    // Auxiliary Fields (supporting details)
-    let auxiliaryFields: [PassField]?
+    /// Primary fields - most prominent information on the pass
+    /// Example: [{"key": "memberName", "label": "Name", "value": "Maria Ruiz"}]
+    let primaryFields: [GeminiPassField]?
     
-    // Back Fields (information on the back)
-    let backFields: [PassField]?
+    /// Secondary fields - additional information below primary
+    /// Example: [{"key": "memberNumber", "label": "Member Number", "value": "7337"}]
+    let secondaryFields: [GeminiPassField]?
     
-    // Colors (hex format)
-    let backgroundColor: String?
+    /// Auxiliary fields - supporting details
+    /// Example: [{"key": "memberSince", "label": "Joined", "value": "2026-01-02T00:00-7:00", "dateStyle": "PKDateStyleShort"}]
+    let auxiliaryFields: [GeminiPassField]?
+    
+    /// Back fields - information on the back of the pass
+    /// Example: [{"key": "terms", "label": "Terms and Conditions", "value": "Lorem ipsum..."}]
+    let backFields: [GeminiPassField]?
+    
+    // MARK: - Visual Design Colors
+    
+    /// Foreground color in rgb() or hex format (e.g., "rgb(0, 0, 0)" or "#000000")
     let foregroundColor: String?
+    
+    /// Background color in rgb() or hex format (e.g., "rgb(245, 197, 67)" or "#F5C543")
+    let backgroundColor: String?
+    
+    /// Label color (optional, defaults to foregroundColor)
     let labelColor: String?
     
-    // Expiration and Relevance
-    let expirationDate: String? // ISO 8601 format
-    let relevantDate: String? // ISO 8601 format
+    // MARK: - Dates
     
-    // Store Card Specific (if passFormat is storeCard)
+    /// Expiration date in ISO 8601 format (e.g., "2026-12-31T23:59:59-08:00")
+    let expirationDate: String?
+    
+    /// Relevant date - when the pass becomes relevant (ISO 8601 format)
+    let relevantDate: String?
+    
+    // MARK: - Legacy/Specific Format Support
+    
+    /// Store Card Specific information (for backward compatibility)
     let storeCardInfo: StoreCardInfo?
     
-    // Coupon Specific (if passFormat is coupon)
+    /// Coupon Specific information (for backward compatibility)
     let couponInfo: CouponInfo?
     
-    // Event Ticket Specific (if passFormat is eventTicket)
+    /// Event Ticket Specific information (for backward compatibility)
     let eventInfo: EventInfo?
 }
 
-/// Field structure for PassKit passes
-struct PassField: Codable {
+/// PassKit field structure matching Apple's pass.json format
+/// This is what Gemini should return for each field in primaryFields, secondaryFields, etc.
+struct GeminiPassField: Codable {
+    /// Unique key for this field (e.g., "memberName", "memberNumber")
     let key: String
+    
+    /// Label text displayed above the value (e.g., "Name", "Member Number")
     let label: String?
+    
+    /// The actual value to display (e.g., "Maria Ruiz", "7337")
     let value: String
-    let textAlignment: String? // "PKTextAlignmentLeft", "PKTextAlignmentCenter", "PKTextAlignmentRight"
+    
+    /// Text alignment: "PKTextAlignmentLeft", "PKTextAlignmentCenter", "PKTextAlignmentRight"
+    let textAlignment: String?
+    
+    /// Date style: "PKDateStyleShort", "PKDateStyleMedium", "PKDateStyleLong", "PKDateStyleFull"
+    /// Only used when value is a date string in ISO 8601 format
+    let dateStyle: String?
+    
+    /// Time style: "PKDateStyleShort", "PKDateStyleMedium", "PKDateStyleLong", "PKDateStyleFull"
+    /// Only used when value is a date string in ISO 8601 format
+    let timeStyle: String?
+    
+    /// Number style: "PKNumberStyleDecimal", "PKNumberStylePercent", "PKNumberStyleScientific", "PKNumberStyleSpellOut"
+    let numberStyle: String?
+    
+    /// ISO 4217 currency code (e.g., "USD", "EUR") when displaying currency
+    let currencyCode: String?
+    
+    /// Message to display when this field's value changes
+    let changeMessage: String?
 }
 
 /// Store card specific information

@@ -31,8 +31,9 @@ struct HomeScreen: View {
             return walletCards
         }
         return walletCards.filter { card in
-            card.extractedData?.cardName?.localizedCaseInsensitiveContains(searchText) == true ||
-            card.extractedData?.companyName?.localizedCaseInsensitiveContains(searchText) == true
+            card.passDescription.localizedCaseInsensitiveContains(searchText) ||
+            card.organizationName.localizedCaseInsensitiveContains(searchText) ||
+            card.displayName.localizedCaseInsensitiveContains(searchText)
         }
     }
     
@@ -41,8 +42,9 @@ struct HomeScreen: View {
             return draftCards
         }
         return draftCards.filter { card in
-            card.extractedData?.cardName?.localizedCaseInsensitiveContains(searchText) == true ||
-            card.extractedData?.companyName?.localizedCaseInsensitiveContains(searchText) == true
+            card.passDescription.localizedCaseInsensitiveContains(searchText) ||
+            card.organizationName.localizedCaseInsensitiveContains(searchText) ||
+            card.displayName.localizedCaseInsensitiveContains(searchText)
         }
     }
     
@@ -164,18 +166,12 @@ struct CardRowView: View {
                     .shadow(color: .black.opacity(0.1), radius: 4, x: 0, y: 2)
                 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(card.extractedData?.cardName ?? "Untitled Card")
+                    Text(card.passDescription ?? "Untitled Card")
                         .font(.headline)
                         .fontWeight(.medium)
                         .foregroundColor(.primary)
                         .lineLimit(1)
                     
-                    if let companyName = card.extractedData?.companyName {
-                        Text(companyName)
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
-                            .lineLimit(1)
-                    }
                     
                     Text(card.creationDate.formatted(date: .abbreviated, time: .omitted))
                         .font(.caption)

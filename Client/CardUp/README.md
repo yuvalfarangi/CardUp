@@ -9,6 +9,24 @@ CardUp is an iOS application that uses Google's Gemini AI to automatically extra
 [![SwiftUI](https://img.shields.io/badge/SwiftUI-3.0+-green.svg)](https://developer.apple.com/xcode/swiftui/)
 [![License](https://img.shields.io/badge/License-Proprietary-red.svg)]()
 
+## 🎉 Latest Update: PassKit Generic Format Support
+
+CardUp now fully supports **Apple PassKit's Generic pass format**, providing maximum flexibility and standards compliance for loyalty cards, membership cards, and more.
+
+**📚 New Documentation:**
+- **[PASSKIT_GENERIC_CHANGES_SUMMARY.md](PASSKIT_GENERIC_CHANGES_SUMMARY.md)** - Complete overview of changes
+- **[GEMINI_PROMPT_TEMPLATE.md](GEMINI_PROMPT_TEMPLATE.md)** - Gemini AI integration guide with JSON format
+- **[MIGRATION_GUIDE.md](MIGRATION_GUIDE.md)** - Detailed migration instructions
+
+**✨ What's New:**
+- Full PassKit Generic pass format support with all field types
+- Structured fields (primary, secondary, auxiliary, back, header)
+- Enhanced date, number, and currency formatting
+- RGB to hex color conversion
+- Complete alignment with Apple's pass.json specification
+
+**⚠️ Important:** Update your Gemini AI prompt to return the new JSON format. See `GEMINI_PROMPT_TEMPLATE.md` for details.
+
 ## ✨ Features
 
 - 📸 **AI-Powered Scanning**: Capture any loyalty, membership, or coupon card with your camera
