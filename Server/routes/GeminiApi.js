@@ -1,5 +1,7 @@
 const express = require('express');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
+const multer = require('multer');
+const upload = multer({ storage: multer.memoryStorage() });
 
 const router = express.Router();
 
@@ -72,36 +74,68 @@ router.post('/generate', async (req, res) => {
     }
 });
 
-router.post('/chat', async (req, res) => {
-    try {
-        const { messages } = req.body;
 
-        if (!messages || !Array.isArray(messages) || messages.length === 0) {
-            return res.status(400).json({ error: 'Messages array is required' });
+// The field name 'file' must match the key used in your Swift postMultipart function
+router.post('/chat', upload.single('file'), async (req, res) => {
+    try {
+        if (!req.file) {
+            return res.status(400).json({ error: 'Image file is required' });
         }
 
-        // Ensure you are calling getGenerativeModel directly
         const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
 
-        // Map previous messages to the history format, excluding the last one
-        const history = messages.slice(0, -1).map(msg => ({
-            role: msg.role === 'model' || msg.role === 'assistant' ? 'model' : 'user',
-            parts: [{ text: msg.content }]
-        }));
+        const imagePart = {
+            inlineData: {
+                data: req.file.buffer.toString("base64"),
+                mimeType: req.file.mimetype
+            }
+        };
 
-        // Start the chat session with the formatted history
-        const chat = model.startChat({ history });
+        const prompt = "Analyze this card and return the details in JSON format.";
+        const result = await model.generateContent([prompt, imagePart]);
+        const textResponse = result.response.text();
 
-        // Send the final message
-        const lastMessage = messages[messages.length - 1].content;
-        const result = await chat.sendMessage(lastMessage);
+        // Ensure the response matches the GeminiCardAnalysisResponse struct expected by your Swift client
+        console.log('Gemini result:', textResponse);
+        res.status(200).send(textResponse);
 
-        console.log('Gemini Chat result:', result.response.text());
-        res.status(200).json({ response: result.response.text() });
     } catch (error) {
-        console.error('Gemini Chat error:', error);
+        console.error('Gemini error:', error);
         res.status(500).json({ error: error.message });
     }
 });
+
+// router.post('/chat', async (req, res) => {
+//     console.log(req.body);
+//     try {
+//         const { messages } = req.body;
+
+//         if (!messages || !Array.isArray(messages) || messages.length === 0) {
+//             return res.status(400).json({ error: 'Messages array is required' });
+//         }
+
+//         // Ensure you are calling getGenerativeModel directly
+//         const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+
+//         // Map previous messages to the history format, excluding the last one
+//         const history = messages.slice(0, -1).map(msg => ({
+//             role: msg.role === 'model' || msg.role === 'assistant' ? 'model' : 'user',
+//             parts: [{ text: msg.content }]
+//         }));
+
+//         // Start the chat session with the formatted history
+//         const chat = model.startChat({ history });
+
+//         // Send the final message
+//         const lastMessage = messages[messages.length - 1].content;
+//         const result = await chat.sendMessage(lastMessage);
+
+//         console.log('Gemini Chat result:', result.response.text());
+//         res.status(200).json({ response: result.response.text() });
+//     } catch (error) {
+//         console.error('Gemini Chat error:', error);
+//         res.status(500).json({ error: error.message });
+//     }
+// });
 
 module.exports = router;

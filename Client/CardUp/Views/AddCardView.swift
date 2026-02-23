@@ -212,6 +212,8 @@ struct AddCardView: View {
         createdCard = newCard
         
         Task {
+            print(image)
+            print(newCard)
             await cardProcessingService.generateWalletPass(from: image, for: newCard)
         }
     }
@@ -221,7 +223,7 @@ struct AddCardView: View {
     }
     
     private func handleProcessingComplete() {
-        guard let extractedData = cardProcessingService.extractedData,
+        guard let geminiResponse = cardProcessingService.extractedData,
               let passData = cardProcessingService.generatedPassData,
               let card = createdCard else { return }
         
@@ -496,11 +498,11 @@ struct ProcessingView: View {
                 // AI Processing Indicator
                 VStack(spacing: 12) {
                     HStack(spacing: 8) {
-                        Image(systemName: "brain.fill")
+                        Image(systemName: "sparkles")
                             .foregroundColor(.blue)
                             .symbolEffect(.variableColor.iterative, options: .repeating)
                         
-                        Text("Apple Intelligence")
+                        Text("Gemini AI")
                             .font(.subheadline)
                             .fontWeight(.medium)
                             .foregroundColor(.blue)
@@ -526,17 +528,17 @@ struct ProcessingView: View {
     private func getProgressDescription() -> String {
         switch progress {
         case 0.0..<0.2:
-            return "Analyzing card type and format..."
+            return "Preparing image for analysis..."
         case 0.2..<0.4:
-            return "Extracting text with Vision framework..."
+            return "Sending to Gemini AI server..."
         case 0.4..<0.6:
-            return "Processing with Apple Intelligence..."
+            return "AI analyzing card format and details..."
         case 0.6..<0.8:
-            return "Extracting colors and logo..."
+            return "Downloading generated design..."
         case 0.8..<1.0:
-            return "Creating graphics and design..."
+            return "Finalizing wallet pass..."
         default:
-            return "Generating Apple Wallet pass..."
+            return "Complete!"
         }
     }
 }

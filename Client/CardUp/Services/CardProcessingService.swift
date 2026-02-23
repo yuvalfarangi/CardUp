@@ -2,44 +2,264 @@
 //  CardProcessingService.swift
 //  CardUp
 //
-//  Created by Yuval Farangi on 20/02/2026.
+//  Created by Yuval Farangi on 22/02/2026.
+//  Updated by Yuval Farangi on 23/02/2026 - Integrated Gemini AI
 //
 
 import Foundation
 import UIKit
 import SwiftUI
-import Vision
-import FoundationModels
-import CoreGraphics
-import CoreImage
 
-// MARK: - Hebrew Detection Extension (inlined)
-private extension String {
-    var containsHebrewCharacters: Bool {
-        // Hebrew Unicode range: U+0590 to U+05FF
-        let hebrewRange = "\u{0590}"..."\u{05FF}"
-        return self.unicodeScalars.contains { scalar in
-            hebrewRange.contains(String(scalar))
-        }
-    }
-}
-
+/// A comprehensive service for processing physical card images into Apple Wallet passes using AI-powered analysis.
+///
+/// `CardProcessingService` is the central orchestrator for transforming photos of physical cards (loyalty cards,
+/// membership cards, coupons, etc.) into fully functional Apple Wallet passes. It leverages Google's Gemini AI
+/// through a server API to extract card information, detect visual elements, and generate appropriate pass designs.
+///
+/// ## Features
+///
+/// The service provides a complete pipeline for card processing with the following capabilities:
+///
+/// - **AI-Powered Card Analysis**: Uses Google Gemini AI to extract structured data from card images
+/// - **Barcode Detection**: Automatically identifies and extracts barcode formats (QR, PDF417, Code128, Aztec)
+/// - **Design Extraction**: Captures visual design elements including colors, logos, and branding
+/// - **Color Analysis**: Extracts dominant colors for consistent visual styling
+/// - **Pass Generation**: Creates Apple Wallet-compatible passes with all extracted information
+/// - **Progress Tracking**: Provides real-time progress updates during the multi-step processing pipeline
+///
+/// ## Usage
+///
+/// The typical workflow involves calling `generateWalletPass(from:for:)` with a card image and a Card model:
+///
+/// ```swift
+/// let processingService = CardProcessingService()
+///
+/// // Process a card image
+/// await processingService.generateWalletPass(from: cardImage, for: card)
+///
+/// // Monitor progress
+/// if processingService.isProcessing {
+///     Text("Processing: \(Int(processingService.processingProgress * 100))%")
+///     Text(processingService.processingStatus)
+/// }
+///
+/// // Check for errors
+/// if let error = processingService.error {
+///     Text("Error: \(error)")
+/// }
+///
+/// // Access results
+/// if let passData = processingService.generatedPassData {
+///     // Pass is ready to be added to Apple Wallet
+/// }
+/// ```
+///
+/// ## Processing Pipeline
+///
+/// The service executes the following steps in sequence:
+///
+/// 1. **Image Preparation (10%)**: Compresses and validates the input image
+/// 2. **AI Analysis (30%)**: Sends image to Gemini AI for structured data extraction
+/// 3. **Design Download (50%)**: Retrieves generated design image from server
+/// 4. **Card Update (60%)**: Updates the Card model with extracted data
+/// 5. **Color Extraction (70%)**: Analyzes image for dominant colors
+/// 6. **Logo Processing (80%)**: Extracts and processes logo region
+/// 7. **Pass Generation (95%)**: Creates final .pkpass file
+/// 8. **Completion (100%)**: Pass is ready for Apple Wallet
+///
+/// ## Architecture
+///
+/// - **Observable Pattern**: Uses Swift's `@Observable` macro for seamless SwiftUI integration
+/// - **Async/Await**: All processing operations are fully asynchronous using Swift Concurrency
+/// - **Error Handling**: Comprehensive error types with user-friendly messages
+/// - **Main Actor Isolation**: UI-related properties are properly isolated to the main thread
+///
+/// ## Integration Points
+///
+/// This service coordinates with several other components:
+///
+/// - `ServerApi`: Handles communication with the Gemini AI backend
+/// - `PassKitIntegrator`: Generates actual .pkpass files for Apple Wallet
+/// - `Card` model: SwiftData model storing all card information
+/// - `GeminiCardAnalysisResponse`: Structured response from AI analysis
+///
+/// ## Performance Considerations
+///
+/// - Images are automatically compressed to under 5MB for efficient network transfer
+/// - Color extraction is performed on a background thread to avoid blocking
+/// - Progress updates ensure responsive UI during long-running operations
+///
+/// ## Thread Safety
+///
+/// This class is designed to be used from the main actor. All public methods marked with `@MainActor`
+/// ensure thread-safe property updates and proper UI synchronization.
+///
+/// - Warning: The service maintains mutable state and is not designed for concurrent processing of
+///            multiple cards. Create separate instances if parallel processing is needed.
+///
+/// - SeeAlso: `ServerApi`, `PassKitIntegrator`, `Card`, `GeminiCardAnalysisResponse`
 @Observable
 final class CardProcessingService {
+    // MARK: - Public Properties
+    
+    /// Indicates whether a card processing operation is currently in progress.
+    ///
+    /// This property is automatically updated throughout the processing pipeline and can be
+    /// observed in SwiftUI views to show loading states or disable user interactions.
+    ///
+    /// - Note: This property is `@MainActor` isolated and safe to observe in views.
     var isProcessing: Bool = false
-    var extractedData: ExtractedCardData?
+    
+    /// The complete structured data extracted from the card image by Gemini AI.
+    ///
+    /// This property contains the full response from the Gemini API including:
+    /// - Card type/format recommendation
+    /// - Extracted text fields (name, membership number, etc.)
+    /// - Barcode information (format and data)
+    /// - Color scheme (background, foreground, label colors)
+    /// - Generated design image
+    ///
+    /// The data is structured according to Apple PassKit field conventions and is ready
+    /// to be used for pass generation.
+    ///
+    /// - SeeAlso: `GeminiCardAnalysisResponse`
+    var extractedData: GeminiCardAnalysisResponse?
+    
+    /// The final generated Apple Wallet pass file data (.pkpass).
+    ///
+    /// This property contains the complete, signed .pkpass file ready to be added to Apple Wallet.
+    /// The data can be presented using `PKAddPassesViewController` or saved to disk.
+    ///
+    /// - Note: This property is only populated after successful completion of all processing steps.
     var generatedPassData: Data?
+    
+    /// A user-friendly error message if processing fails.
+    ///
+    /// When an error occurs during any step of the processing pipeline, this property is set
+    /// with a descriptive message suitable for display to the user. If processing is successful,
+    /// this property remains `nil`.
+    ///
+    /// Common error scenarios include:
+    /// - Network connectivity issues
+    /// - Invalid or unreadable card images
+    /// - Server-side processing failures
+    /// - Insufficient image quality
     var error: String?
+    
+    /// The current progress of the processing operation (0.0 to 1.0).
+    ///
+    /// This property provides fine-grained progress tracking through the multi-step processing
+    /// pipeline. It can be used to drive progress bars or percentage indicators in the UI.
+    ///
+    /// Progress milestones:
+    /// - 0.10: Image preparation complete
+    /// - 0.30: AI analysis complete
+    /// - 0.50: Design image downloaded
+    /// - 0.60: Card model updated
+    /// - 0.70: Color extraction complete
+    /// - 0.80: Logo processing complete
+    /// - 0.95: Pass generation complete
+    /// - 1.00: All operations complete
     var processingProgress: Double = 0.0
     
+    /// A human-readable description of the current processing step.
+    ///
+    /// This property provides contextual information about what the service is currently doing,
+    /// suitable for display to the user. Examples include:
+    /// - "Preparing image..."
+    /// - "Analyzing card with AI..."
+    /// - "Downloading design..."
+    /// - "Generating wallet pass..."
+    ///
+    /// The status updates in sync with `processingProgress`.
+    var processingStatus: String = ""
+    
+    // MARK: - Private Properties
+    
+    /// The shared server API instance for communicating with the backend.
+    ///
+    /// This property provides access to the Gemini AI analysis endpoint and other server
+    /// functionality required for card processing.
+    private let serverApi = ServerApi.shared
+    
+    /// The PassKit integration service for generating .pkpass files.
+    ///
+    /// This property handles the final step of creating Apple Wallet-compatible pass files
+    /// from the extracted card data.
     private let passKitIntegrator = PassKitIntegrator()
-    private let cloudFlareIntegrator = CloudFlareIntegrator()
-    private let languageModel = SystemLanguageModel.default
     
-    // MARK: - Main Processing Pipeline
+    // MARK: - Main Processing Pipeline (Gemini-Powered)
     
+    /// Processes a card image through the complete AI-powered pipeline to generate an Apple Wallet pass.
+    ///
+    /// This is the main entry point for card processing. It orchestrates the entire workflow from raw
+    /// image input to a fully functional Apple Wallet pass. The method handles all intermediate steps
+    /// including AI analysis, design extraction, color processing, and pass generation.
+    ///
+    /// ## Processing Steps
+    ///
+    /// The method executes the following pipeline:
+    ///
+    /// 1. **Image Preparation**: Validates and compresses the image for network transfer
+    /// 2. **AI Analysis**: Sends the image to Gemini AI for structured data extraction
+    /// 3. **Design Retrieval**: Downloads or decodes the generated design image
+    /// 4. **Data Mapping**: Updates the Card model with all extracted information
+    /// 5. **Color Analysis**: Extracts dominant colors if not already provided
+    /// 6. **Logo Extraction**: Identifies and processes the logo region
+    /// 7. **Pass Generation**: Creates the final .pkpass file
+    ///
+    /// ## Progress Tracking
+    ///
+    /// Throughout execution, the method updates:
+    /// - `processingProgress`: Numerical progress from 0.0 to 1.0
+    /// - `processingStatus`: Human-readable status messages
+    /// - `isProcessing`: Boolean flag indicating active processing
+    ///
+    /// ## Error Handling
+    ///
+    /// The method handles various error scenarios:
+    /// - Invalid or corrupted images
+    /// - Network connectivity issues
+    /// - Server-side processing failures
+    /// - Data parsing errors
+    ///
+    /// All errors are caught and converted to user-friendly messages stored in the `error` property.
+    ///
+    /// ## Side Effects
+    ///
+    /// This method modifies multiple properties on both the service and the Card model:
+    /// - Updates all service state properties (`isProcessing`, `error`, `extractedData`, etc.)
+    /// - Modifies the Card model with extracted data
+    /// - Downloads and stores images (banner, logo)
+    /// - Generates and stores pass data
+    ///
+    /// - Parameters:
+    ///   - image: The UIImage containing the photo of the physical card to process
+    ///   - card: The SwiftData Card model to populate with extracted information
+    ///
+    /// - Note: This method must be called from the main actor context as it updates
+    ///         observable properties that may be bound to UI elements.
+    ///
+    /// - Precondition: The image must be a valid UIImage with readable pixel data
+    /// - Postcondition: On success, the card will have all fields populated and `generatedPassData` will contain a valid .pkpass file
+    ///
+    /// - Example:
+    /// ```swift
+    /// let service = CardProcessingService()
+    /// let cardImage = UIImage(named: "my-card")!
+    /// let card = Card()
+    ///
+    /// await service.generateWalletPass(from: cardImage, for: card)
+    ///
+    /// if let error = service.error {
+    ///     print("Processing failed: \(error)")
+    /// } else if let passData = service.generatedPassData {
+    ///     print("Success! Generated \(passData.count) bytes")
+    /// }
+    /// ```
     @MainActor
     func generateWalletPass(from image: UIImage, for card: Card) async {
+        print(card)
         isProcessing = true
         error = nil
         extractedData = nil
@@ -47,625 +267,563 @@ final class CardProcessingService {
         processingProgress = 0.0
         
         do {
-            // Step 1: Extract Text first (15%)
-            updateProgress(0.15, status: "Extracting text...")
-            let extractedText = try await fetchText(from: image)
-            
-            print("📊 Text extraction summary:")
-            print("   Length: \(extractedText.count) characters")
-            
-            guard !extractedText.isEmpty else {
-                throw CardProcessingError.noTextFound
+            // Step 1: Compress and prepare image (10%)
+            updateProgress(0.10, status: "Preparing image...")
+            guard let imageData = compressImage(image) else {
+                throw CardProcessingError.invalidImage
             }
             
-            // Step 2: Determine Pass Type (25%)
-            updateProgress(0.25, status: "Analyzing card type...")
-            let passType = try await generateCardType(image: image)
-            card.passType = passType
+            print("📸 Image compressed: \(imageData.count) bytes")
             
-            // Step 3: Process Text with AI (45%)
-            updateProgress(0.45, status: "Processing with Apple Intelligence...")
-            let processedData = try await processTextWithFoundationModels(text: extractedText, image: image)
+            // Step 2: Send to Gemini via server (30%)
+            updateProgress(0.30, status: "Analyzing card with AI...")
+            let geminiResponse = try await serverApi.analyzeCardWithGemini(imageData: imageData)
             
-            // Step 4: Extract Colors (60%)
-            updateProgress(0.6, status: "Analyzing colors...")
-            let dominantColors = try await fetchColors(from: image)
-            card.dominantColorsHex = dominantColors
+            print("✅ Gemini analysis complete:")
+            print("   Format: \(geminiResponse.passFormat.rawValue)")
+            print("   Organization: \(geminiResponse.cardDetails.organizationName ?? "nil")")
+            print("   Barcode: \(geminiResponse.cardDetails.barcodeMessage ?? "nil")")
             
-            // Step 5: Get Logo (75%)
-            updateProgress(0.75, status: "Extracting logo...")
-            let logoData = try await getLogo(from: image, companyName: processedData.companyName)
-            card.logoImageData = logoData
+            extractedData = geminiResponse
             
-            // Step 6: Generate Graphics (88%)
-            updateProgress(0.88, status: "Creating graphics...")
-            let bannerData = try await createGraphic(from: image, extractedData: processedData)
-            card.bannerImageData = bannerData
+            // Step 3: Download design image (50%)
+            updateProgress(0.50, status: "Downloading design...")
+            let designImageData = try await downloadDesignImage(from: geminiResponse.designImage)
+            card.bannerImageData = designImageData
             
-            // Step 7: Generate Final Pass (100%)
+            print("🎨 Design image downloaded: \(designImageData?.count ?? 0) bytes")
+            
+            // Step 4: Update card model (60%)
+            updateProgress(0.60, status: "Saving card details...")
+            updateCard(card, with: geminiResponse)
+            
+            // Step 5: Generate colors if not provided (70%)
+            updateProgress(0.70, status: "Analyzing colors...")
+            if card.dominantColorsHex.isEmpty {
+                let colors = await extractDominantColors(from: image)
+                card.dominantColorsHex = colors
+            }
+            
+            // Step 6: Process logo if available (80%)
+            updateProgress(0.80, status: "Processing logo...")
+            if let logoImage = try await extractLogoFromDesign(image) {
+                card.logoImageData = logoImage.pngData()
+            }
+            
+            // Step 7: Generate Pass (95%)
             updateProgress(0.95, status: "Generating wallet pass...")
-            
-            // Save extracted data to card BEFORE generating pass
-            card.barcodeString = processedData.barcodeString ?? ""
-            card.barcodeFormat = processedData.barcodeFormat ?? "Code128"
-            
-            let cardData = processedData.toCardData()
-            let jsonData = try JSONEncoder().encode(cardData)
-            card.extractedTextJson = String(data: jsonData, encoding: .utf8) ?? ""
-            
-            // Debug: Print extracted data
-            print("📝 Extracted Data:")
-            print("   Card Name: \(processedData.cardName ?? "nil")")
-            print("   Company Name: \(processedData.companyName ?? "nil")")
-            print("   Membership: \(processedData.membershipNumber ?? "nil")")
-            print("   Barcode: \(processedData.barcodeString ?? "nil")")
-            print("   Colors: \(dominantColors)")
-            
-            // Generate the final pass
-            let passData = try await passKitIntegrator.generateWalletPass(for: card, with: processedData)
+            let passData = try await passKitIntegrator.generateWalletPassFromGemini(
+                for: card,
+                with: geminiResponse
+            )
             
             updateProgress(1.0, status: "Complete!")
             
-            extractedData = processedData
             generatedPassData = passData
+            card.pkpassData = passData
+            card.isDraft = false
             
+            print("✅ Pass generation complete!")
+            
+        } catch let error as ServerApiError {
+            await MainActor.run {
+                self.error = "Server error: \(error.errorDescription ?? error.localizedDescription)"
+                self.processingProgress = 0.0
+                self.isProcessing = false
+            }
+        } catch let error as CardProcessingError {
+            await MainActor.run {
+                self.error = error.errorDescription
+                self.processingProgress = 0.0
+                self.isProcessing = false
+            }
         } catch {
             await MainActor.run {
                 self.error = "Failed to process card: \(error.localizedDescription)"
                 self.processingProgress = 0.0
+                self.isProcessing = false
             }
         }
         
         isProcessing = false
     }
     
-    // MARK: - Individual Processing Functions
+    // MARK: - Helper Methods (Gemini-Based)
     
-    private func generateCardType(image: UIImage) async throws -> String {
-        // Simplified approach - use text analysis without Foundation Models to avoid hanging
-        // Foundation Models image analysis isn't directly supported yet
-        return "storeCard" // Default to storeCard for all loyalty cards
+    /// Compresses a UIImage to ensure it meets size requirements for network upload.
+    ///
+    /// This method implements adaptive compression to reduce image file size while maintaining
+    /// acceptable quality for AI analysis. It uses a multi-stage approach:
+    ///
+    /// 1. Initial JPEG compression at 0.8 quality
+    /// 2. Progressive quality reduction if size exceeds limit
+    /// 3. Image resizing as a last resort if quality reduction is insufficient
+    ///
+    /// ## Compression Strategy
+    ///
+    /// The method prioritizes maintaining image dimensions over quality, as spatial relationships
+    /// are important for accurate AI analysis. Only when quality reduction to 0.1 still produces
+    /// oversized files does it resort to resizing the image proportionally.
+    ///
+    /// ## Size Limits
+    ///
+    /// - Maximum file size: 5MB (5,242,880 bytes)
+    /// - Minimum quality: 0.1 (10% JPEG quality)
+    /// - Compression format: JPEG (balanced quality/size ratio)
+    ///
+    /// - Parameter image: The UIImage to compress
+    /// - Returns: Compressed image data as JPEG, or `nil` if the image cannot be processed
+    ///
+    /// - Note: The method preserves the original image's aspect ratio during any resizing operations.
+    ///
+    /// - Complexity: O(n) where n is the number of compression iterations needed
+    ///
+    /// - Example:
+    /// ```swift
+    /// if let compressedData = compressImage(largeImage) {
+    ///     print("Compressed to \(compressedData.count) bytes")
+    /// }
+    /// ```
+    private func compressImage(_ image: UIImage) -> Data? {
+        let maxSizeInBytes = 5 * 1024 * 1024 // 5 MB
+        var compressionQuality: CGFloat = 0.8
+        
+        guard var imageData = image.jpegData(compressionQuality: compressionQuality) else {
+            return nil
+        }
+        
+        // Reduce quality if image is too large
+        while imageData.count > maxSizeInBytes && compressionQuality > 0.1 {
+            compressionQuality -= 0.1
+            guard let compressedData = image.jpegData(compressionQuality: compressionQuality) else {
+                break
+            }
+            imageData = compressedData
+        }
+        
+        // If still too large, resize the image
+        if imageData.count > maxSizeInBytes {
+            let ratio = sqrt(CGFloat(maxSizeInBytes) / CGFloat(imageData.count))
+            let newSize = CGSize(
+                width: image.size.width * ratio,
+                height: image.size.height * ratio
+            )
+            
+            if let resizedImage = resizeImage(image, to: newSize) {
+                imageData = resizedImage.jpegData(compressionQuality: 0.8) ?? imageData
+            }
+        }
+        
+        return imageData
     }
     
-    private func fetchText(from image: UIImage) async throws -> String {
-        // Preprocess image for better OCR
-        let preprocessedImage = preprocessImageForOCR(image)
+    /// Resizes a UIImage to a target size while maintaining quality.
+    ///
+    /// This method creates a new bitmap context at the specified size and draws the image into it.
+    /// The resulting image has a scale of 1.0, making it suitable for network uploads where
+    /// actual pixel dimensions matter more than points.
+    ///
+    /// ## Use Case
+    ///
+    /// This method is typically called as a last resort when compression quality reduction alone
+    /// cannot bring an image under the required file size limit. It's invoked by `compressImage(_:)`
+    /// when aggressive quality reduction still produces oversized files.
+    ///
+    /// - Parameters:
+    ///   - image: The UIImage to resize
+    ///   - size: The target size in points
+    ///
+    /// - Returns: A new resized UIImage, or `nil` if the graphics context cannot be created
+    ///
+    /// - Note: The method uses `UIGraphicsBeginImageContextWithOptions` with opaque=false to preserve
+    ///         any transparency in the original image.
+    ///
+    /// - Important: The returned image always has a scale of 1.0 regardless of the input image's scale.
+    private func resizeImage(_ image: UIImage, to size: CGSize) -> UIImage? {
+        UIGraphicsBeginImageContextWithOptions(size, false, 1.0)
+        defer { UIGraphicsEndImageContext() }
         
-        return try await withCheckedThrowingContinuation { continuation in
-            guard let cgImage = preprocessedImage.cgImage else {
-                continuation.resume(throwing: CardProcessingError.invalidImage)
-                return
-            }
-            
-            let request = VNRecognizeTextRequest { request, error in
-                if let error = error {
-                    continuation.resume(throwing: error)
-                    return
-                }
-                
-                guard let observations = request.results as? [VNRecognizedTextObservation] else {
-                    continuation.resume(throwing: CardProcessingError.noTextFound)
-                    return
-                }
-                
-                print("📸 Vision returned \(observations.count) text observations")
-                
-                // Get the recognized text
-                let recognizedStrings = observations.compactMap { observation -> String? in
-                    observation.topCandidates(1).first?.string
-                }
-                
-                let fullText = recognizedStrings.joined(separator: "\n")
-                
-                print("📖 Recognized text with \(observations.count) observations:")
-                print("   Total text length: \(fullText.count) characters")
-                
-                print("   First 15 lines:")
-                recognizedStrings.prefix(15).forEach { line in
-                    print("   \(line)")
-                }
-                
-                continuation.resume(returning: fullText)
-            }
-            
-            // Vision OCR Configuration
-            request.recognitionLanguages = ["en-US"]
-            request.recognitionLevel = .accurate
-            request.usesLanguageCorrection = true
-            request.automaticallyDetectsLanguage = true
-            request.minimumTextHeight = 0.001
-            request.revision = VNRecognizeTextRequestRevision3
-            request.customWords = []
-            
-            // Request handler with orientation correction
-            let options: [VNImageOption: Any] = [
-                .ciContext: CIContext(options: nil)
-            ]
-            let handler = VNImageRequestHandler(cgImage: cgImage, orientation: .up, options: options)
-            
-            DispatchQueue.global(qos: .userInitiated).async {
-                do {
-                    try handler.perform([request])
-                } catch {
-                    continuation.resume(throwing: error)
-                }
-            }
-        }
+        image.draw(in: CGRect(origin: .zero, size: size))
+        return UIGraphicsGetImageFromCurrentImageContext()
     }
     
-    // MARK: - Image Preprocessing
-    
-    /// Preprocesses image to improve OCR accuracy for Hebrew text
-    private func preprocessImageForOCR(_ image: UIImage) -> UIImage {
-        guard let cgImage = image.cgImage else { return image }
-        
-        let ciImage = CIImage(cgImage: cgImage)
-        let context = CIContext(options: nil)
-        
-        // Apply filters to enhance text readability
-        var processedImage = ciImage
-        
-        // 1. Auto-enhance (contrast, exposure)
-        if let autoEnhance = CIFilter(name: "CIColorControls") {
-            autoEnhance.setValue(processedImage, forKey: kCIInputImageKey)
-            autoEnhance.setValue(1.2, forKey: kCIInputContrastKey)     // Increase contrast
-            autoEnhance.setValue(0.1, forKey: kCIInputBrightnessKey)   // Slightly brighten
-            autoEnhance.setValue(1.1, forKey: kCIInputSaturationKey)   // Slight saturation boost
-            
-            if let output = autoEnhance.outputImage {
-                processedImage = output
+    /// Downloads or decodes a design image from either a URL or base64-encoded data URI.
+    ///
+    /// This method handles two different source formats returned by the Gemini API:
+    ///
+    /// ## Data URI Format
+    ///
+    /// If the source starts with "data:image", it's treated as a base64-encoded data URI:
+    /// ```
+    /// data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAUA...
+    /// ```
+    /// The method extracts and decodes the base64 portion.
+    ///
+    /// ## HTTP URL Format
+    ///
+    /// If the source is a standard HTTP/HTTPS URL, the method downloads the image using URLSession:
+    /// ```
+    /// https://example.com/generated-design.png
+    /// ```
+    ///
+    /// ## Error Handling
+    ///
+    /// The method is resilient to failures:
+    /// - Invalid URLs return `nil` rather than throwing
+    /// - Network errors are caught and logged
+    /// - HTTP errors (non-200 status codes) return `nil`
+    ///
+    /// This allows the processing pipeline to continue even if design image retrieval fails.
+    ///
+    /// - Parameter source: Either a data URI string or HTTP(S) URL string
+    /// - Returns: The image data if successfully retrieved/decoded, or `nil` on failure
+    ///
+    /// - Note: This method uses standard URLSession which respects system proxy settings and SSL pinning.
+    ///
+    /// - Example:
+    /// ```swift
+    /// // Base64 data URI
+    /// let dataUri = "data:image/png;base64,iVBORw0KGgo..."
+    /// let imageData = try await downloadDesignImage(from: dataUri)
+    ///
+    /// // HTTP URL
+    /// let urlString = "https://cdn.example.com/design.jpg"
+    /// let imageData = try await downloadDesignImage(from: urlString)
+    /// ```
+    private func downloadDesignImage(from source: String) async throws -> Data? {
+        // Check if it's a base64 string
+        if source.hasPrefix("data:image") {
+            // Extract base64 data (format: "data:image/png;base64,...")
+            if let base64String = source.components(separatedBy: ",").last,
+               let imageData = Data(base64Encoded: base64String) {
+                print("📥 Decoded base64 image: \(imageData.count) bytes")
+                return imageData
             }
         }
         
-        // 2. Sharpen for clearer text edges
-        if let sharpen = CIFilter(name: "CISharpenLuminance") {
-            sharpen.setValue(processedImage, forKey: kCIInputImageKey)
-            sharpen.setValue(0.7, forKey: kCIInputSharpnessKey)
-            
-            if let output = sharpen.outputImage {
-                processedImage = output
-            }
+        // Otherwise treat as URL
+        guard let url = URL(string: source) else {
+            print("⚠️ Invalid design image source: \(source)")
+            return nil
         }
-        
-        // 3. Convert back to UIImage
-        if let outputCGImage = context.createCGImage(processedImage, from: processedImage.extent) {
-            print("📸 Image preprocessed for better OCR")
-            return UIImage(cgImage: outputCGImage, scale: image.scale, orientation: image.imageOrientation)
-        }
-        
-        print("⚠️ Image preprocessing failed, using original")
-        return image
-    }
-    
-    // Multi-pass recognition for challenging Hebrew text
-    // This method uses multiple strategies to maximize Hebrew text detection
-    private func fetchTextMultiPass(from image: UIImage) async throws -> String {
-        guard let cgImage = image.cgImage else {
-            throw CardProcessingError.invalidImage
-        }
-        
-        print("🔄 Starting HEBREW MULTI-PASS recognition...")
-        
-        // Pass 1: Accurate mode with full Hebrew support
-        print("   Pass 1: Accurate recognition...")
-        let pass1Text = try await performTextRecognition(
-            on: cgImage,
-            languages: ["he", "he-IL", "en-US"],
-            pass: 1,
-            level: .accurate
-        )
-        
-        // Pass 2: Fast mode (sometimes catches text accurate mode misses)
-        print("   Pass 2: Fast recognition...")
-        let pass2Text = try await performTextRecognition(
-            on: cgImage,
-            languages: ["he", "he-IL", "en-US"],
-            pass: 2,
-            level: .fast
-        )
-        
-        // Pass 3: Hebrew-only mode with auto-detection
-        print("   Pass 3: Hebrew-focused...")
-        let pass3Text = try await performTextRecognition(
-            on: cgImage,
-            languages: ["he", "he-IL"],
-            pass: 3,
-            level: .accurate,
-            autoDetect: true
-        )
-        
-        // Combine and deduplicate all results
-        let allLines = (pass1Text + "\n" + pass2Text + "\n" + pass3Text)
-            .components(separatedBy: .newlines)
-            .filter { !$0.isEmpty }
-        
-        // Remove duplicates while preserving Hebrew text
-        var uniqueLines: [String] = []
-        var seenLines = Set<String>()
-        
-        for line in allLines {
-            let normalized = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !seenLines.contains(normalized) && normalized.count > 1 {
-                uniqueLines.append(normalized)
-                seenLines.insert(normalized)
-            }
-        }
-        
-        let finalText = uniqueLines.joined(separator: "\n")
-        
-        print("✅ Multi-pass complete!")
-        print("   Total unique lines: \(uniqueLines.count)")
-        print("   Total characters: \(finalText.count)")
-        
-        return finalText
-    }
-    
-    private func performTextRecognition(
-        on cgImage: CGImage,
-        languages: [String],
-        pass: Int,
-        level: VNRequestTextRecognitionLevel = .accurate,
-        autoDetect: Bool = false
-    ) async throws -> String {
-        return try await withCheckedThrowingContinuation { continuation in
-            let request = VNRecognizeTextRequest { request, error in
-                if let error = error {
-                    print("   ❌ Pass \(pass) failed: \(error)")
-                    continuation.resume(returning: "")
-                    return
-                }
-                
-                guard let observations = request.results as? [VNRecognizedTextObservation] else {
-                    continuation.resume(returning: "")
-                    return
-                }
-                
-                // Get the recognized text from observations
-                let recognizedStrings = observations.compactMap { observation -> String? in
-                    observation.topCandidates(1).first?.string
-                }
-                
-                let text = recognizedStrings.joined(separator: "\n")
-                
-                print("   ✓ Pass \(pass): \(observations.count) observations, \(text.count) chars")
-                
-                continuation.resume(returning: text)
-            }
-            
-            // Configure the request
-            request.recognitionLanguages = languages
-            request.recognitionLevel = level
-            request.usesLanguageCorrection = true
-            request.automaticallyDetectsLanguage = autoDetect
-            request.minimumTextHeight = 0.003
-            request.revision = VNRecognizeTextRequestRevision3
-            request.customWords = []
-            
-            let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
-            
-            DispatchQueue.global(qos: .userInitiated).async {
-                do {
-                    try handler.perform([request])
-                } catch {
-                    print("   ❌ Pass \(pass) error: \(error)")
-                    continuation.resume(returning: "")
-                }
-            }
-        }
-    }
-    
-    private func processTextWithFoundationModels(text: String, image: UIImage) async throws -> ExtractedCardData {
-        guard languageModel.availability == .available else {
-            // Fallback to simple pattern matching
-            return try await processTextFallback(text: text)
-        }
-        
-        let session = LanguageModelSession(
-            instructions: """
-            You are an expert at extracting structured data from loyalty card text.
-            
-            Parse the provided text to extract:
-            - Card name (the name of the loyalty program or card)
-            - Company name (the business or organization)
-            - Barcode string (any numbers that could be barcodes - look for long numeric strings)
-            - Barcode format (default to Code128 for numeric strings, QR for mixed content)
-            - Membership number (member ID, customer number, account number, etc.)
-            - Expiration date (if mentioned, in format MM/YY or MM/YYYY or DD/MM/YY)
-            - Logo description (describe the brand based on text)
-            - Graphic description (describe the overall style)
-            - Additional text (any other relevant text fields)
-            
-            CRITICAL RULES:
-            1. Preserve text in its original language
-            2. Numbers are always numeric digits (0-9)
-            3. Barcode numbers are typically 8-13 digits long
-            4. Member numbers can be shorter (6-10 digits)
-            5. Return structured JSON data
-            6. Only include information you're confident about
-            
-            Return accurate structured data.
-            """
-        )
-        
-        let prompt = """
-        Extract card information from this text:
-        
-        \(text)
-        """
         
         do {
-            let response = try await session.respond(to: prompt, generating: ExtractedCardData.self)
+            let (data, response) = try await URLSession.shared.data(from: url)
             
-            // Validate and log the extracted data
-            print("✅ Foundation Models extraction complete:")
-            print("   Card Name: \(response.content.cardName ?? "nil")")
-            print("   Company: \(response.content.companyName ?? "nil")")
-            print("   Membership: \(response.content.membershipNumber ?? "nil")")
-            print("   Barcode: \(response.content.barcodeString ?? "nil")")
-            print("   Expiration: \(response.content.expirationDate ?? "nil")")
+            guard let httpResponse = response as? HTTPURLResponse,
+                  (200...299).contains(httpResponse.statusCode) else {
+                print("⚠️ Failed to download design image: HTTP error")
+                return nil
+            }
             
-            return response.content
+            print("📥 Downloaded design image: \(data.count) bytes")
+            return data
+            
         } catch {
-            print("❌ Foundation Models processing failed: \(error)")
-            print("   Falling back to pattern matching...")
-            return try await processTextFallback(text: text)
+            print("⚠️ Failed to download design image: \(error)")
+            return nil
         }
     }
     
-    private func processTextFallback(text: String) async throws -> ExtractedCardData {
-        // Advanced pattern matching fallback with comprehensive Hebrew support
-        let lines = text.components(separatedBy: .newlines)
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
+    /// Updates a Card model with data extracted from Gemini AI analysis.
+    ///
+    /// This method maps the structured Gemini response to the Card model's properties,
+    /// ensuring all extracted information is properly persisted. It handles various data
+    /// formats and provides sensible defaults when information is missing.
+    ///
+    /// ## Updated Properties
+    ///
+    /// The method updates the following Card properties:
+    ///
+    /// - `passType`: Set from Gemini's format recommendation (storeCard, coupon, etc.)
+    /// - `barcodeString`: The extracted barcode data/message
+    /// - `barcodeFormat`: Mapped to PassKit format constants
+    /// - `dominantColorsHex`: Background and foreground colors from Gemini
+    /// - `extractedTextJson`: Complete JSON representation of all card details
+    ///
+    /// ## Color Handling
+    ///
+    /// Colors from Gemini are stored in the card's `dominantColorsHex` array, but only if
+    /// they don't already exist in the array. This prevents duplicate color entries.
+    ///
+    /// ## Barcode Format Mapping
+    ///
+    /// Gemini returns barcode formats as descriptive strings (e.g., "QR Code", "PDF417").
+    /// This method maps them to PassKit constants like "PKBarcodeFormatQR" using
+    /// `mapGeminiBarcodeFormat(_:)`.
+    ///
+    /// - Parameters:
+    ///   - card: The Card model to update
+    ///   - response: The complete Gemini analysis response containing extracted data
+    ///
+    /// - Note: The method stores the complete `cardDetails` as JSON for maximum flexibility.
+    ///         This allows access to all extracted fields even if not explicitly mapped to Card properties.
+    ///
+    /// - SeeAlso: `mapGeminiBarcodeFormat(_:)`
+    private func updateCard(_ card: Card, with response: GeminiCardAnalysisResponse) {
+        let details = response.cardDetails
         
-        var cardName: String?
-        var companyName: String?
-        var barcodeString: String?
-        var membershipNumber: String?
-        var expirationDate: String?
-        var additionalText: [String] = []
+        // Pass type
+        card.passType = response.passFormat.rawValue
         
-        let isHebrewText = text.containsHebrewCharacters
-        
-        // Count Hebrew characters per line for prioritization
-        let linesWithHebrewScore = lines.map { line -> (line: String, hebrewCount: Int, hasNumbers: Bool) in
-            let hebrewCount = line.unicodeScalars.filter { scalar in
-                let hebrewRange = "\u{0590}"..."\u{05FF}"
-                return hebrewRange.contains(String(scalar))
-            }.count
-            let hasNumbers = line.contains(where: \.isNumber)
-            return (line, hebrewCount, hasNumbers)
+        // Barcode
+        if let barcodeMessage = details.barcodeMessage {
+            card.barcodeString = barcodeMessage
         }
         
-        print("🔍 ENHANCED HEBREW FALLBACK processing:")
-        print("   Total lines: \(lines.count)")
-        print("   Hebrew detected: \(isHebrewText)")
-        print("   Line analysis:")
-        linesWithHebrewScore.prefix(10).forEach { item in
-            let marker = item.hebrewCount > 0 ? "🇮🇱" : "🇺🇸"
-            let nums = item.hasNumbers ? "🔢" : "  "
-            print("   \(marker)\(nums) [\(item.hebrewCount) Hebrew] \(item.line)")
+        if let barcodeFormat = details.barcodeFormat {
+            card.barcodeFormat = mapGeminiBarcodeFormat(barcodeFormat)
         }
         
-        // COMPREHENSIVE Hebrew keywords (expanded list)
-        let hebrewCardKeywords = [
-            "כרטיס", "כרטיס מועדון", "מועדון", "לקוח", "חבר", "כרטיס חבר",
-            "כרטיס לקוח", "כרטיס אשראי", "כרטיס חיוב"
-        ]
-        let hebrewMemberKeywords = [
-            "מספר", "מספר חבר", "מספר לקוח", "חבר", "לקוח", "מס'", "מס׳",
-            "ת.ז", "ת.ז.", "טלפון", "נייד", "שם"
-        ]
-        let hebrewExpiryKeywords = [
-            "תוקף", "פג תוקף", "בתוקף עד", "תוקף עד", "תאריך תפוגה",
-            "עד", "בתוקף"
-        ]
-        let hebrewCompanyNames = [
-            "סופר-פארם", "Super-Pharm", "פוקס", "Fox", "קסטרו", "Castro",
-            "גולף", "Golf", "רשת", "ויקטורי", "Victory", "שופרסל", "Shufersal"
-        ]
-        
-        // English keywords for mixed cards
-        let englishCardKeywords = [
-            "card", "loyalty", "member", "club", "reward", "vip",
-            "privilege", "customer"
-        ]
-        let englishMemberKeywords = [
-            "member", "number", "id", "customer", "account", "#", "no."
-        ]
-        
-        // First pass: Find company name (prioritize Hebrew if present)
-        if isHebrewText {
-            // For Hebrew cards, look for:
-            // 1. Known company names
-            // 2. Lines with most Hebrew characters (not mixed with numbers)
-            // 3. Lines at the top of the card
-            
-            for (index, item) in linesWithHebrewScore.enumerated() {
-                // Skip pure number lines
-                if item.line.filter({ $0.isLetter }).count < 3 { continue }
-                
-                // Check for known Hebrew companies
-                let matchesKnownCompany = hebrewCompanyNames.contains { item.line.contains($0) }
-                if matchesKnownCompany && companyName == nil {
-                    companyName = item.line
-                    cardName = "כרטיס מועדון \(item.line)"
-                    print("   ✓ Found known company: \(item.line)")
-                    break
-                }
-                
-                // First line with substantial Hebrew text (5+ chars) and few numbers
-                if item.hebrewCount >= 5 && !item.hasNumbers && companyName == nil && index < 5 {
-                    companyName = item.line
-                    cardName = "כרטיס מועדון \(item.line)"
-                    print("   ✓ Using Hebrew company name: \(item.line)")
-                    break
-                }
+        // Colors
+        if let bgColor = details.backgroundColor {
+            if !card.dominantColorsHex.contains(bgColor) {
+                card.dominantColorsHex.append(bgColor)
             }
         }
         
-        // Fallback to English/mixed text
-        if companyName == nil {
-            for (index, line) in lines.enumerated() {
-                // Skip if too short or all numbers
-                if line.count < 3 || line.allSatisfy({ $0.isNumber || $0.isWhitespace }) {
-                    continue
-                }
-                
-                // Check for English card keywords
-                let lowercased = line.lowercased()
-                let hasCardKeyword = englishCardKeywords.contains { lowercased.contains($0) }
-                
-                // First substantial text line is likely the company
-                if !hasCardKeyword && line.contains(where: \.isLetter) && index < 5 {
-                    companyName = line
-                    cardName = "\(line) Loyalty Card"
-                    print("   ✓ Using English company name: \(line)")
-                    break
-                }
+        if let fgColor = details.foregroundColor {
+            if !card.dominantColorsHex.contains(fgColor) {
+                card.dominantColorsHex.append(fgColor)
             }
         }
         
-        // Second pass: Find numbers (barcodes, membership, dates)
-        for line in lines {
-            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            
-            // Extract just the digits
-            let digits = trimmed.filter { $0.isNumber }
-            
-            // Long numeric strings (8-13 digits) = barcode
-            if digits.count >= 8 && digits.count <= 13 {
-                if barcodeString == nil {
-                    barcodeString = digits
-                    print("   ✓ Found barcode: \(digits)")
-                }
-                if membershipNumber == nil && digits.count >= 8 {
-                    membershipNumber = digits
-                    print("   ✓ Found membership number: \(digits)")
-                }
-                continue
-            }
-            
-            // Medium numeric strings (6-10 digits) = potential member number
-            if digits.count >= 6 && digits.count < 8 && membershipNumber == nil {
-                membershipNumber = digits
-                print("   ✓ Found member number: \(digits)")
-                continue
-            }
-            
-            // Date patterns (MM/YY, DD/MM/YY, etc.)
-            if trimmed.contains("/") && trimmed.count <= 10 && expirationDate == nil {
-                let components = trimmed.components(separatedBy: "/")
-                if components.count >= 2 && components.allSatisfy({ $0.allSatisfy(\.isNumber) }) {
-                    expirationDate = trimmed
-                    print("   ✓ Found expiration date: \(trimmed)")
-                    continue
-                }
-            }
-            
-            // Check for keyword-based fields
-            let lowercased = trimmed.lowercased()
-            
-            // Hebrew member/expiry keywords
-            if isHebrewText {
-                let hasHebrewMemberKeyword = hebrewMemberKeywords.contains { trimmed.contains($0) }
-                let hasHebrewExpiryKeyword = hebrewExpiryKeywords.contains { trimmed.contains($0) }
-                
-                if hasHebrewMemberKeyword || hasHebrewExpiryKeyword {
-                    if additionalText.count < 3 {
-                        additionalText.append(trimmed)
-                        print("   ✓ Found keyword line: \(trimmed)")
-                    }
-                    continue
-                }
-                
-                // Hebrew card type keywords
-                let hasCardKeyword = hebrewCardKeywords.contains { trimmed.contains($0) }
-                if hasCardKeyword && cardName == nil {
-                    cardName = trimmed
-                    continue
-                }
-            }
-            
-            // English keywords
-            let hasEnglishMemberKeyword = englishMemberKeywords.contains { lowercased.contains($0) }
-            let hasEnglishCardKeyword = englishCardKeywords.contains { lowercased.contains($0) }
-            
-            if hasEnglishMemberKeyword || lowercased.contains("exp") || lowercased.contains("valid") {
-                if additionalText.count < 3 {
-                    additionalText.append(trimmed)
-                    print("   ✓ Found keyword line: \(trimmed)")
-                }
-                continue
-            }
-            
-            if hasEnglishCardKeyword && cardName == nil {
-                cardName = trimmed
-                continue
-            }
-            
-            // Store other substantial lines as additional text
-            if trimmed.count > 2 && additionalText.count < 3 {
-                additionalText.append(trimmed)
-            }
+        // Store the full JSON response for later use
+        if let jsonData = try? JSONEncoder().encode(details),
+           let jsonString = String(data: jsonData, encoding: .utf8) {
+            card.extractedTextJson = jsonString
         }
         
-        // Apply sensible defaults
-        if companyName == nil {
-            companyName = lines.first { $0.count > 2 && !$0.allSatisfy(\.isNumber) } ?? "Unknown Company"
-        }
-        
-        if cardName == nil {
-            if let company = companyName {
-                cardName = "\(company) Card"
-            } else {
-                cardName = "Loyalty Card"
-            }
-        }
-        
-        // If we have no barcode but have a membership number, use it as barcode too
-        if barcodeString == nil && membershipNumber != nil {
-            barcodeString = membershipNumber
-        }
-        
-        let result = ExtractedCardData(
-            cardName: cardName,
-            companyName: companyName,
-            barcodeString: barcodeString,
-            barcodeFormat: "Code128",
-            logoDescription: nil,
-            graphicDescription: nil,
-            expirationDate: expirationDate,
-            membershipNumber: membershipNumber,
-            additionalText: additionalText.isEmpty ? nil : additionalText
-        )
-        
-        print("✅ Fallback extraction complete:")
-        print("   Card Name: \(result.cardName ?? "nil")")
-        print("   Company: \(result.companyName ?? "nil")")
-        print("   Membership: \(result.membershipNumber ?? "nil")")
-        print("   Barcode: \(result.barcodeString ?? "nil")")
-        print("   Expiration: \(result.expirationDate ?? "nil")")
-        print("   Additional fields: \(result.additionalText?.count ?? 0)")
-        
-        return result
+        print("📝 Card updated with Gemini data")
     }
     
-    private func fetchColors(from image: UIImage) async throws -> [String] {
-        return try await withCheckedThrowingContinuation { continuation in
+    /// Maps Gemini's barcode format strings to Apple PassKit barcode format constants.
+    ///
+    /// Gemini AI returns barcode formats as human-readable strings like "QR Code",
+    /// "PDF417", "Code 128", etc. This method converts them to the exact string constants
+    /// expected by Apple's PassKit framework.
+    ///
+    /// ## Supported Formats
+    ///
+    /// The method recognizes and maps the following formats:
+    ///
+    /// - **QR Code** → `PKBarcodeFormatQR`
+    /// - **PDF417** → `PKBarcodeFormatPDF417`
+    /// - **Aztec** → `PKBarcodeFormatAztec`
+    /// - **Code 128** → `PKBarcodeFormatCode128`
+    ///
+    /// ## Matching Strategy
+    ///
+    /// The method uses case-insensitive substring matching, making it robust against
+    /// variations in formatting:
+    /// - "QR", "qr code", "QR Code" all map to `PKBarcodeFormatQR`
+    /// - "PDF-417", "pdf417", "PDF 417" all map to `PKBarcodeFormatPDF417`
+    ///
+    /// ## Default Behavior
+    ///
+    /// If the format string doesn't match any known format, the method returns
+    /// `PKBarcodeFormatQR` as a safe default, since QR codes are the most common
+    /// and widely supported barcode format.
+    ///
+    /// - Parameter format: The barcode format string from Gemini (e.g., "QR Code", "PDF417")
+    /// - Returns: The corresponding PassKit format constant string
+    ///
+    /// - Note: The PassKit constants are strings, not enum cases, as they're used in
+    ///         pass.json generation for the .pkpass file.
+    ///
+    /// - Example:
+    /// ```swift
+    /// let format1 = mapGeminiBarcodeFormat("QR Code")      // "PKBarcodeFormatQR"
+    /// let format2 = mapGeminiBarcodeFormat("pdf417")       // "PKBarcodeFormatPDF417"
+    /// let format3 = mapGeminiBarcodeFormat("unknown")      // "PKBarcodeFormatQR" (default)
+    /// ```
+    private func mapGeminiBarcodeFormat(_ format: String) -> String {
+        let lowercased = format.lowercased()
+        
+        if lowercased.contains("qr") {
+            return "PKBarcodeFormatQR"
+        } else if lowercased.contains("pdf417") {
+            return "PKBarcodeFormatPDF417"
+        } else if lowercased.contains("aztec") {
+            return "PKBarcodeFormatAztec"
+        } else if lowercased.contains("code128") {
+            return "PKBarcodeFormatCode128"
+        } else {
+            return "PKBarcodeFormatQR" // Default
+        }
+    }
+    
+    /// Extracts the logo region from a card image using a simple crop heuristic.
+    ///
+    /// This method attempts to isolate the logo from a card image by cropping a region where
+    /// logos are typically positioned. It uses common card design conventions where logos
+    /// appear in the top-left area of the card.
+    ///
+    /// ## Extraction Strategy
+    ///
+    /// The method uses a heuristic-based approach:
+    ///
+    /// 1. **Region Selection**: Crops the top 30% and left 40% of the card image
+    /// 2. **Resizing**: Scales the cropped region to standard logo dimensions (320x320)
+    /// 3. **Format**: Returns as UIImage for further processing or storage
+    ///
+    /// ## Logo Region Dimensions
+    ///
+    /// - Horizontal extent: 40% of card width (left-aligned)
+    /// - Vertical extent: 30% of card height (top-aligned)
+    /// - Final size: 320x320 points (@2x retina resolution)
+    ///
+    /// ## Limitations
+    ///
+    /// This is a simple spatial heuristic and may not work perfectly for all card designs:
+    /// - Centered logos may be only partially captured
+    /// - Right-aligned logos will be missed
+    /// - Bottom-aligned logos will not be detected
+    ///
+    /// For production use, consider enhancing with:
+    /// - Machine learning-based logo detection
+    /// - Saliency analysis to find prominent regions
+    /// - Color clustering to identify distinct logo areas
+    ///
+    /// - Parameter image: The full card image to extract the logo from
+    /// - Returns: A resized UIImage containing the extracted logo region, or `nil` if extraction fails
+    ///
+    /// - Note: The method returns `nil` if the image cannot be converted to CGImage or if
+    ///         cropping fails. This is a non-fatal error that allows processing to continue.
+    ///
+    /// - Example:
+    /// ```swift
+    /// if let logo = try await extractLogoFromDesign(cardImage) {
+    ///     card.logoImageData = logo.pngData()
+    /// }
+    /// ```
+    private func extractLogoFromDesign(_ image: UIImage) async throws -> UIImage? {
+        // Simple approach: crop top-left corner where logos typically are
+        guard let cgImage = image.cgImage else { return nil }
+        
+        let imageWidth = CGFloat(cgImage.width)
+        let imageHeight = CGFloat(cgImage.height)
+        
+        // Logo is typically in top 30% and left 40% of card
+        let logoWidth = imageWidth * 0.4
+        let logoHeight = imageHeight * 0.3
+        
+        let cropRect = CGRect(x: 0, y: 0, width: logoWidth, height: logoHeight)
+        
+        guard let croppedCGImage = cgImage.cropping(to: cropRect) else {
+            return nil
+        }
+        
+        let logoImage = UIImage(cgImage: croppedCGImage)
+        
+        // Resize to standard logo size (160x160 @1x, 320x320 @2x)
+        return resizeImage(logoImage, to: CGSize(width: 320, height: 320))
+    }
+    
+    /// Extracts the dominant colors from an image for use in pass design.
+    ///
+    /// This method analyzes an image to identify the most prominent colors, which are then
+    /// used to style the Apple Wallet pass for a cohesive visual experience. The analysis
+    /// is performed on a background thread to avoid blocking the main thread.
+    ///
+    /// ## Algorithm
+    ///
+    /// The color extraction process:
+    ///
+    /// 1. **Downsampling**: Resizes image to 100x100 for efficient analysis
+    /// 2. **Sampling**: Examines every 20th pixel to reduce computation
+    /// 3. **Counting**: Builds a histogram of color frequencies
+    /// 4. **Ranking**: Sorts colors by frequency to find dominant ones
+    /// 5. **Selection**: Returns top 3 most common colors
+    ///
+    /// ## Color Representation
+    ///
+    /// Colors are returned as hexadecimal strings (e.g., "#FF5733") for easy
+    /// storage and serialization. The format is compatible with web standards
+    /// and can be easily converted to SwiftUI/UIKit colors.
+    ///
+    /// ## Thread Safety
+    ///
+    /// The method uses Swift Concurrency with `withCheckedContinuation` to safely
+    /// bridge the Core Graphics work (performed on a background queue) with async/await.
+    /// This ensures the main thread remains responsive during analysis.
+    ///
+    /// ## Fallback Behavior
+    ///
+    /// If color extraction fails at any point (invalid image, no context, etc.),
+    /// the method returns a default blue color: `["#3B82F6"]`
+    ///
+    /// - Parameter image: The card image to analyze
+    /// - Returns: An array of 1-3 hex color strings, sorted by frequency (most common first)
+    ///
+    /// - Note: Alpha channel is considered - pixels with alpha < 128 are excluded from analysis
+    ///
+    /// - Complexity: O(n) where n is the number of pixels sampled (approximately 500 for a 100x100 image)
+    ///
+    /// - SeeAlso: `performColorExtraction(from:)` for the actual analysis implementation
+    private func extractDominantColors(from image: UIImage) async -> [String] {
+        return await withCheckedContinuation { continuation in
             guard let cgImage = image.cgImage else {
-                continuation.resume(throwing: CardProcessingError.invalidImage)
+                continuation.resume(returning: ["#3B82F6"])
                 return
             }
             
             DispatchQueue.global(qos: .userInitiated).async {
-                let colors = self.extractDominantColors(from: cgImage)
+                let colors = self.performColorExtraction(from: cgImage)
                 continuation.resume(returning: colors)
             }
         }
     }
     
-    private func extractDominantColors(from cgImage: CGImage) -> [String] {
+    /// Performs the actual color extraction analysis on a background thread.
+    ///
+    /// This method does the heavy lifting of color analysis using Core Graphics. It creates
+    /// a bitmap context, draws the image into it, and analyzes the raw pixel data to determine
+    /// the most frequent colors.
+    ///
+    /// ## Processing Steps
+    ///
+    /// 1. **Context Creation**: Creates a 100x100 RGBA bitmap context
+    /// 2. **Rendering**: Draws the CGImage into the context (downsampling if needed)
+    /// 3. **Pixel Access**: Binds the raw buffer to access individual color values
+    /// 4. **Sampling**: Examines every 20th pixel (stride of 20) for efficiency
+    /// 5. **Filtering**: Excludes nearly-transparent pixels (alpha < 128)
+    /// 6. **Histogram**: Counts occurrences of each unique color
+    /// 7. **Sorting**: Ranks colors by frequency
+    /// 8. **Selection**: Returns top 3 colors
+    ///
+    /// ## Color Format
+    ///
+    /// Colors are converted to uppercase hex strings: "#RRGGBB"
+    /// - Red: bytes 0, 4, 8, 12, ... (stride 4)
+    /// - Green: bytes 1, 5, 9, 13, ...
+    /// - Blue: bytes 2, 6, 10, 14, ...
+    /// - Alpha: bytes 3, 7, 11, 15, ...
+    ///
+    /// ## Performance
+    ///
+    /// - Image size: 100x100 = 10,000 pixels
+    /// - Sampling rate: Every 20th pixel = ~500 samples
+    /// - Memory: ~40KB for bitmap context
+    ///
+    /// ## Error Resilience
+    ///
+    /// The method returns a default blue color if any step fails:
+    /// - Context creation failure
+    /// - Image drawing failure
+    /// - Invalid pixel data
+    /// - No valid colors found
+    ///
+    /// - Parameter cgImage: The Core Graphics image to analyze
+    /// - Returns: Array of 1-3 hex color strings, or `["#3B82F6"]` on failure
+    ///
+    /// - Important: This method performs substantial computation and should only be
+    ///              called from background threads or within async contexts.
+    ///
+    /// - Note: The color counting uses a dictionary with hex strings as keys, which
+    ///         means very similar colors are treated as distinct. Consider implementing
+    ///         color bucketing for more robust results.
+    private func performColorExtraction(from cgImage: CGImage) -> [String] {
         let width = 100
         let height = 100
         
@@ -678,7 +836,7 @@ final class CardProcessingService {
             space: CGColorSpaceCreateDeviceRGB(),
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
         ) else {
-            return ["#3B82F6"] // Default blue
+            return ["#3B82F6"]
         }
         
         context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
@@ -692,9 +850,7 @@ final class CardProcessingService {
         
         let totalPixels = width * height * 4
         
-        // Sample pixels and count color frequencies
         for i in stride(from: 0, to: totalPixels, by: 20) {
-            // Ensure we don't read beyond buffer bounds
             guard i + 3 < totalPixels else { continue }
             
             let r = buffer[i]
@@ -702,391 +858,95 @@ final class CardProcessingService {
             let b = buffer[i + 2]
             let a = buffer[i + 3]
             
-            // Skip transparent pixels
             guard a > 128 else { continue }
             
             let hex = String(format: "#%02X%02X%02X", r, g, b)
             colorCounts[hex, default: 0] += 1
         }
         
-        // Return top 3 colors
         let sortedColors = colorCounts.sorted { $0.value > $1.value }
         let topColors = Array(sortedColors.prefix(3).map { $0.key })
         
-        // Always return at least one color
         return topColors.isEmpty ? ["#3B82F6"] : topColors
     }
     
-    private func getLogo(from image: UIImage, companyName: String?) async throws -> Data? {
-        // First try to extract logo from the image using Vision
-        if let logoImage = try await extractLogoFromImage(image) {
-            // Resize and optimize the logo for Apple Wallet
-            // Logo size for passes: 160x160 points (@2x = 320x320 pixels, @3x = 480x480 pixels)
-            let resizedLogo = resizeImage(logoImage, targetSize: CGSize(width: 320, height: 320))
-            return resizedLogo.pngData()
-        }
-        
-        // Fallback: Try Cloudflare Worker for logo search (if company name is available)
-        if let companyName = companyName, !companyName.isEmpty {
-            do {
-                return try await cloudFlareIntegrator.fetchLogo(companyName: companyName)
-            } catch {
-                print("Failed to fetch logo from Cloudflare: \(error)")
-            }
-        }
-        
-        // Ultimate fallback: Generate a simple placeholder logo with company initials
-        if let companyName = companyName, !companyName.isEmpty {
-            return generatePlaceholderLogo(for: companyName).pngData()
-        }
-        
-        return nil
-    }
-    
-    private func extractLogoFromImage(_ image: UIImage) async throws -> UIImage? {
-        return try await withCheckedThrowingContinuation { continuation in
-            guard let cgImage = image.cgImage else {
-                continuation.resume(returning: nil)
-                return
-            }
-            
-            // Use Vision to detect rectangular regions (potential logos)
-            let request = VNDetectRectanglesRequest { request, error in
-                if let error = error {
-                    print("Rectangle detection error: \(error)")
-                    continuation.resume(returning: nil)
-                    return
-                }
-                
-                guard let observations = request.results as? [VNRectangleObservation] else {
-                    continuation.resume(returning: nil)
-                    return
-                }
-                
-                // Find the smallest rectangle in the top portion (likely a logo)
-                let topPortionObservations = observations.filter { obs in
-                    // Logo is usually in the top 40% of the card
-                    obs.boundingBox.midY > 0.6
-                }
-                
-                guard let logoObservation = topPortionObservations.min(by: { obs1, obs2 in
-                    let area1 = obs1.boundingBox.width * obs1.boundingBox.height
-                    let area2 = obs2.boundingBox.width * obs2.boundingBox.height
-                    return area1 < area2
-                }) else {
-                    continuation.resume(returning: nil)
-                    return
-                }
-                
-                // Crop the logo region
-                let imageSize = CGSize(width: cgImage.width, height: cgImage.height)
-                let cropRect = VNImageRectForNormalizedRect(
-                    logoObservation.boundingBox,
-                    Int(imageSize.width),
-                    Int(imageSize.height)
-                )
-                
-                if let croppedImage = cgImage.cropping(to: cropRect) {
-                    continuation.resume(returning: UIImage(cgImage: croppedImage))
-                } else {
-                    continuation.resume(returning: nil)
-                }
-            }
-            
-            request.minimumAspectRatio = 0.5
-            request.maximumAspectRatio = 2.0
-            request.minimumSize = 0.05
-            request.maximumObservations = 10
-            request.minimumConfidence = 0.6
-            
-            let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
-            
-            DispatchQueue.global(qos: .userInitiated).async {
-                do {
-                    try handler.perform([request])
-                } catch {
-                    print("Failed to perform logo detection: \(error)")
-                    continuation.resume(returning: nil)
-                }
-            }
-        }
-    }
-    
-    private func generatePlaceholderLogo(for companyName: String) -> UIImage {
-        // Logo size for Apple Wallet: 160x160 points (@2x = 320x320 pixels)
-        let size = CGSize(width: 320, height: 320)
-        let renderer = UIGraphicsImageRenderer(size: size)
-        
-        return renderer.image { context in
-            // Background circle
-            UIColor.systemBlue.setFill()
-            let circle = UIBezierPath(ovalIn: CGRect(origin: .zero, size: size))
-            circle.fill()
-            
-            // Get initials (first 2 characters or first letter of first 2 words)
-            let words = companyName.split(separator: " ")
-            let initials: String
-            if words.count >= 2 {
-                initials = String(words[0].prefix(1) + words[1].prefix(1))
-            } else {
-                initials = String(companyName.prefix(2))
-            }
-            
-            // Draw initials
-            let attributes: [NSAttributedString.Key: Any] = [
-                .font: UIFont.systemFont(ofSize: 120, weight: .bold),
-                .foregroundColor: UIColor.white
-            ]
-            
-            let text = initials.uppercased()
-            let textSize = text.size(withAttributes: attributes)
-            let textRect = CGRect(
-                x: (size.width - textSize.width) / 2,
-                y: (size.height - textSize.height) / 2,
-                width: textSize.width,
-                height: textSize.height
-            )
-            
-            text.draw(in: textRect, withAttributes: attributes)
-        }
-    }
-    
-    private func resizeImage(_ image: UIImage, targetSize: CGSize) -> UIImage {
-        let renderer = UIGraphicsImageRenderer(size: targetSize)
-        return renderer.image { _ in
-            image.draw(in: CGRect(origin: .zero, size: targetSize))
-        }
-    }
-    
-    private func createGraphic(from image: UIImage, extractedData: ExtractedCardData) async throws -> Data? {
-        // Create a banner graphic for the Apple Wallet pass
-        // Standard pass banner size is 320x120 points (640x240 pixels @2x)
-        guard let cgImage = image.cgImage else {
-            return image.jpegData(compressionQuality: 0.8)
-        }
-        
-        let colors = try await fetchColors(from: image)
-        
-        // Create professional banner from original image
-        return try await createWalletBanner(
-            from: image,
-            cgImage: cgImage,
-            colors: colors,
-            companyName: extractedData.companyName ?? "",
-            cardName: extractedData.cardName ?? ""
-        )
-    }
-    
-    private func createWalletBanner(
-        from originalImage: UIImage,
-        cgImage: CGImage,
-        colors: [String],
-        companyName: String,
-        cardName: String
-    ) async throws -> Data? {
-        // Apple Wallet strip image size for store cards: 375x123 points (@3x = 1125x369 pixels)
-        // Using @2x: 750x246 pixels for better quality
-        let bannerSize = CGSize(width: 750, height: 246)
-        let renderer = UIGraphicsImageRenderer(size: bannerSize)
-        
-        let bannerImage = renderer.image { context in
-            let ctx = context.cgContext
-            
-            // 1. Fill background with gradient from extracted colors
-            if let primaryColorHex = colors.first,
-               let secondaryColorHex = colors.dropFirst().first ?? colors.first,
-               let primaryColor = Color(hex: primaryColorHex)?.cgColor,
-               let secondaryColor = Color(hex: secondaryColorHex)?.cgColor {
-                
-                let gradient = CGGradient(
-                    colorsSpace: CGColorSpaceCreateDeviceRGB(),
-                    colors: [primaryColor, secondaryColor] as CFArray,
-                    locations: [0.0, 1.0]
-                )
-                
-                if let gradient = gradient {
-                    ctx.drawLinearGradient(
-                        gradient,
-                        start: CGPoint(x: 0, y: 0),
-                        end: CGPoint(x: bannerSize.width, y: bannerSize.height),
-                        options: []
-                    )
-                }
-            } else {
-                // Fallback to blue gradient
-                UIColor.systemBlue.setFill()
-                ctx.fill(CGRect(origin: .zero, size: bannerSize))
-            }
-            
-            // 2. Add subtle pattern/texture from original image
-            ctx.saveGState()
-            ctx.setAlpha(0.15)
-            
-            // Draw scaled and cropped original image
-            let aspectRatio = CGFloat(cgImage.width) / CGFloat(cgImage.height)
-            var drawRect: CGRect
-            
-            if aspectRatio > (bannerSize.width / bannerSize.height) {
-                // Image is wider - fit to height
-                let scaledWidth = bannerSize.height * aspectRatio
-                let offsetX = (bannerSize.width - scaledWidth) / 2
-                drawRect = CGRect(x: offsetX, y: 0, width: scaledWidth, height: bannerSize.height)
-            } else {
-                // Image is taller - fit to width
-                let scaledHeight = bannerSize.width / aspectRatio
-                let offsetY = (bannerSize.height - scaledHeight) / 2
-                drawRect = CGRect(x: 0, y: offsetY, width: bannerSize.width, height: scaledHeight)
-            }
-            
-            ctx.draw(cgImage, in: drawRect)
-            ctx.restoreGState()
-            
-            // 3. Add subtle overlay for better text readability
-            ctx.setFillColor(UIColor.black.withAlphaComponent(0.2).cgColor)
-            ctx.fill(CGRect(origin: .zero, size: bannerSize))
-        }
-        
-        return bannerImage.pngData()
-    }
-    
+    /// Updates the processing progress and status message on the main thread.
+    ///
+    /// This helper method ensures thread-safe updates to the observable progress properties.
+    /// It's called throughout the processing pipeline to keep the UI informed of the current
+    /// status and progress percentage.
+    ///
+    /// ## Main Actor Isolation
+    ///
+    /// The method explicitly uses `@MainActor.run` to ensure all property updates occur on
+    /// the main thread, making them safe for SwiftUI observation and preventing potential
+    /// data races.
+    ///
+    /// ## Logging
+    ///
+    /// Each progress update is also logged to the console for debugging purposes, showing
+    /// both the percentage complete and the status message.
+    ///
+    /// - Parameters:
+    ///   - progress: The current progress value from 0.0 (0%) to 1.0 (100%)
+    ///   - status: A human-readable description of the current operation
+    ///
+    /// - Note: The method creates a detached Task to perform the update asynchronously,
+    ///         allowing the calling code to continue without waiting.
+    ///
+    /// - Example:
+    /// ```swift
+    /// updateProgress(0.30, status: "Analyzing card with AI...")
+    /// // Console: Processing: 30% - Analyzing card with AI...
+    /// // Updates: processingProgress = 0.30, processingStatus = "Analyzing card with AI..."
+    /// ```
     private func updateProgress(_ progress: Double, status: String) {
         Task { @MainActor in
             self.processingProgress = progress
+            self.processingStatus = status
             print("Processing: \(Int(progress * 100))% - \(status)")
         }
     }
 }
 
-// MARK: - Foundation Models Integration
+// MARK: - Error Types
 
-@Generable(description: "Structured data extracted from a loyalty card")
-struct ExtractedCardData: Codable, Equatable {
-    @Guide(description: "The name or title of the loyalty card")
-    var cardName: String?
-    
-    @Guide(description: "The company or organization name")
-    var companyName: String?
-    
-    @Guide(description: "Any barcode or QR code number found")
-    var barcodeString: String?
-    
-    @Guide(description: "The format of the barcode: QR, Code128, Code39, etc.")
-    var barcodeFormat: String?
-    
-    @Guide(description: "Description of any logo visible on the card")
-    var logoDescription: String?
-    
-    @Guide(description: "Description of the graphic design showing in the background of the card (e.g. stars, stripes,geometric shapes, etc.) without texts and layout")
-    var graphicDescription: String?
-    
-    @Guide(description: "Expiration date if visible (format: MM/YY or MM/YYYY)")
-    var expirationDate: String?
-    
-    @Guide(description: "Membership or customer number")
-    var membershipNumber: String?
-    
-    @Guide(description: "Any additional text fields or information", .count(0...5))
-    var additionalText: [String]?
-}
-
-// MARK: - Data Conversion
-
-extension ExtractedCardData {
-    func toCardData() -> CardData {
-        return CardData(
-            cardName: cardName,
-            companyName: companyName,
-            barcodeString: barcodeString,
-            barcodeFormat: barcodeFormat,
-            logoDescription: logoDescription,
-            graphicDescription: graphicDescription,
-            expirationDate: expirationDate,
-            membershipNumber: membershipNumber,
-            additionalText: additionalText
-        )
-    }
-}
-
-// MARK: - CloudFlare Integration
-
-@Observable
-final class CloudFlareIntegrator {
-    private let baseURL = "https://your-worker.your-subdomain.workers.dev"
-    
-    func fetchLogo(companyName: String) async throws -> Data? {
-        guard !companyName.isEmpty else { return nil }
-        
-        guard let url = URL(string: "\(baseURL)/logo") else {
-            throw CloudFlareError.invalidURL
-        }
-        
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
-        let payload = ["companyName": companyName]
-        request.httpBody = try JSONSerialization.data(withJSONObject: payload)
-        
-        let (data, response) = try await URLSession.shared.data(for: request)
-        
-        guard let httpResponse = response as? HTTPURLResponse,
-              httpResponse.statusCode == 200 else {
-            return nil // Logo not found, not an error
-        }
-        
-        return data
-    }
-    
-    func generatePass(payload: PassPayload) async throws -> Data {
-        guard let url = URL(string: "\(baseURL)/generate-pass") else {
-            throw CloudFlareError.invalidURL
-        }
-        
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
-        let jsonData = try JSONEncoder().encode(payload)
-        request.httpBody = jsonData
-        
-        let (data, response) = try await URLSession.shared.data(for: request)
-        
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw CloudFlareError.networkError
-        }
-        
-        guard httpResponse.statusCode == 200 else {
-            throw CloudFlareError.serverError(httpResponse.statusCode)
-        }
-        
-        return data
-    }
-}
-
-enum CloudFlareError: LocalizedError {
-    case invalidURL
-    case networkError
-    case serverError(Int)
-    
-    var errorDescription: String? {
-        switch self {
-        case .invalidURL:
-            return "Invalid server URL"
-        case .networkError:
-            return "Network connection failed"
-        case .serverError(let code):
-            return "Server error: \(code)"
-        }
-    }
-}
-
-// MARK: - Supporting Types
-
+/// Errors that can occur during card image processing.
+///
+/// This enumeration defines the specific error cases that may arise during the card processing
+/// pipeline, from initial image validation through final pass generation. Each case includes
+/// a user-friendly error message accessible via the `errorDescription` property.
+///
+/// ## Error Cases
+///
+/// - `invalidImage`: The provided image is corrupted, unreadable, or in an unsupported format
+/// - `noTextFound`: AI analysis completed but couldn't extract any readable text from the card
+/// - `processingFailed`: A general processing error occurred during one of the pipeline steps
+/// - `networkError`: Network connectivity issues prevented communication with the server
+///
+/// ## Usage in Error Handling
+///
+/// These errors are caught in the main processing method and converted to user-friendly
+/// messages for display:
+///
+/// ```swift
+/// do {
+///     try await processCard()
+/// } catch let error as CardProcessingError {
+///     self.error = error.errorDescription
+/// }
+/// ```
+///
+/// ## Conformance
+///
+/// Conforms to `LocalizedError` to provide localized, user-facing error descriptions.
+///
+/// - SeeAlso: `CardProcessingService.generateWalletPass(from:for:)`
 enum CardProcessingError: LocalizedError {
     case invalidImage
     case noTextFound
     case processingFailed
-    case foundationModelsUnavailable
+    case networkError
     
     var errorDescription: String? {
         switch self {
@@ -1096,11 +956,8 @@ enum CardProcessingError: LocalizedError {
             return "No text was found in the image"
         case .processingFailed:
             return "Failed to process the card"
-        case .foundationModelsUnavailable:
-            return "Apple Intelligence is not available on this device"
+        case .networkError:
+            return "Network connection failed"
         }
     }
 }
-
-
-

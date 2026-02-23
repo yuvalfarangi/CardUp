@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import UIKit
 
 /// A service class for handling all server API communications
 @Observable
@@ -145,14 +146,22 @@ final class ServerApi {
         let boundary = "Boundary-\(UUID().uuidString)"
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
         
+        print("📦 Building multipart request:")
+        print("  • Boundary: \(boundary)")
+        print("  • File name: \(fileName)")
+        print("  • MIME type: \(mimeType)")
+        print("  • File size: \(data.count) bytes")
+        
         var body = Data()
         
         // Add additional fields if provided
         if let fields = additionalFields {
+            print("  • Additional fields: \(fields.count)")
             for (key, value) in fields {
                 body.append("--\(boundary)\r\n".data(using: .utf8)!)
                 body.append("Content-Disposition: form-data; name=\"\(key)\"\r\n\r\n".data(using: .utf8)!)
                 body.append("\(value)\r\n".data(using: .utf8)!)
+                print("    - \(key): \(value)")
             }
         }
         
@@ -165,6 +174,9 @@ final class ServerApi {
         body.append("--\(boundary)--\r\n".data(using: .utf8)!)
         
         request.httpBody = body
+        
+        print("  • Total body size: \(body.count) bytes")
+        print("  • Content-Type header: multipart/form-data; boundary=\(boundary)")
         
         return try await performRequest(request)
     }
@@ -493,6 +505,167 @@ extension ServerApi {
     func logEvent(event: AnalyticsEvent) async throws {
         try await post(endpoint: "/analytics", body: event)
     }
+    
+    // MARK: - Gemini API Integration
+    
+    /// Process card image using Gemini AI
+    /// - Parameter imageData: The card image data (JPEG or PNG)
+    /// - Returns: Complete card analysis from Gemini including format, details, and design image
+    func analyzeCardWithGemini(imageData: Data) async throws -> GeminiCardAnalysisResponse {
+        // Log the request being sent to Gemini
+        print("📤 Sending card scan request to Gemini AI")
+        print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        print("📋 Request Details:")
+        print("  • Endpoint: /api/gemini/chat")
+        print("  • Method: POST (multipart/form-data)")
+        print("  • Image Size: \(imageData.count) bytes (\(String(format: "%.2f", Double(imageData.count) / 1024.0)) KB)")
+        print("  • MIME Type: image/jpeg")
+        print("  • File Name: card.jpg")
+        print("  • Server URL: \(baseURL)")
+        
+        // Calculate image dimensions if possible
+        if let image = UIImage(data: imageData) {
+            print("  • Image Dimensions: \(Int(image.size.width)) x \(Int(image.size.height)) pts")
+            print("  • Image Scale: \(image.scale)x")
+        }
+        
+        print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        print("⏳ Waiting for Gemini AI analysis...")
+        
+        do {
+            let response: GeminiCardAnalysisResponse = try await postMultipart(
+                endpoint: "/api/gemini/chat",
+                data: imageData,
+                fileName: "card.jpg",
+                mimeType: "image/jpeg"
+            )
+            
+            // Log the response received
+            print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+            print("✅ Gemini AI Response Received")
+            print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+            print("📊 Response Summary:")
+            print("  • Pass Format: \(response.passFormat.rawValue)")
+            print("  • Organization: \(response.cardDetails.organizationName ?? "N/A")")
+            print("  • Description: \(response.cardDetails.description ?? "N/A")")
+            print("  • Logo Text: \(response.cardDetails.logoText ?? "N/A")")
+            
+            if let message = response.message {
+                print("  • Message: \(message)")
+            }
+            
+            print("\n🎨 Card Details:")
+            if let orgName = response.cardDetails.organizationName {
+                print("  • Organization Name: \(orgName)")
+            }
+            if let desc = response.cardDetails.description {
+                print("  • Description: \(desc)")
+            }
+            
+            print("\n📊 Barcode Information:")
+            print("  • Barcode Message: \(response.cardDetails.barcodeMessage ?? "N/A")")
+            print("  • Barcode Format: \(response.cardDetails.barcodeFormat ?? "N/A")")
+            if let altText = response.cardDetails.barcodeAltText {
+                print("  • Alt Text: \(altText)")
+            }
+            
+            print("\n🎨 Visual Design:")
+            print("  • Background Color: \(response.cardDetails.backgroundColor ?? "N/A")")
+            print("  • Foreground Color: \(response.cardDetails.foregroundColor ?? "N/A")")
+            print("  • Label Color: \(response.cardDetails.labelColor ?? "N/A")")
+            print("  • Design Image: \(response.designImage.prefix(50))...")
+            
+            // Log fields
+            if let headerFields = response.cardDetails.headerFields, !headerFields.isEmpty {
+                print("\n📌 Header Fields (\(headerFields.count)):")
+                for (index, field) in headerFields.enumerated() {
+                    print("  \(index + 1). \(field.key): \(field.value) \(field.label != nil ? "(\(field.label!))" : "")")
+                }
+            }
+            
+            if let primaryFields = response.cardDetails.primaryFields, !primaryFields.isEmpty {
+                print("\n🔵 Primary Fields (\(primaryFields.count)):")
+                for (index, field) in primaryFields.enumerated() {
+                    print("  \(index + 1). \(field.key): \(field.value) \(field.label != nil ? "(\(field.label!))" : "")")
+                }
+            }
+            
+            if let secondaryFields = response.cardDetails.secondaryFields, !secondaryFields.isEmpty {
+                print("\n🔸 Secondary Fields (\(secondaryFields.count)):")
+                for (index, field) in secondaryFields.enumerated() {
+                    print("  \(index + 1). \(field.key): \(field.value) \(field.label != nil ? "(\(field.label!))" : "")")
+                }
+            }
+            
+            if let auxiliaryFields = response.cardDetails.auxiliaryFields, !auxiliaryFields.isEmpty {
+                print("\n📎 Auxiliary Fields (\(auxiliaryFields.count)):")
+                for (index, field) in auxiliaryFields.enumerated() {
+                    print("  \(index + 1). \(field.key): \(field.value) \(field.label != nil ? "(\(field.label!))" : "")")
+                }
+            }
+            
+            // Log store card specific info
+            if let storeInfo = response.cardDetails.storeCardInfo {
+                print("\n🏪 Store Card Info:")
+                if let memberNumber = storeInfo.membershipNumber {
+                    print("  • Membership Number: \(memberNumber)")
+                }
+                if let memberName = storeInfo.memberName {
+                    print("  • Member Name: \(memberName)")
+                }
+                if let tier = storeInfo.tierLevel {
+                    print("  • Tier Level: \(tier)")
+                }
+                if let points = storeInfo.pointsBalance {
+                    print("  • Points Balance: \(points)")
+                }
+            }
+            
+            // Log coupon specific info
+            if let couponInfo = response.cardDetails.couponInfo {
+                print("\n🎟️ Coupon Info:")
+                if let code = couponInfo.couponCode {
+                    print("  • Coupon Code: \(code)")
+                }
+                if let discount = couponInfo.discountAmount {
+                    print("  • Discount: \(discount)")
+                }
+                if let expiry = couponInfo.expirationDate {
+                    print("  • Expires: \(expiry)")
+                }
+            }
+            
+            // Log dates
+            if let expirationDate = response.cardDetails.expirationDate {
+                print("\n📅 Expiration Date: \(expirationDate)")
+            }
+            if let relevantDate = response.cardDetails.relevantDate {
+                print("📅 Relevant Date: \(relevantDate)")
+            }
+            
+            // Try to encode to JSON for full inspection
+            if let jsonData = try? JSONEncoder().encode(response.cardDetails),
+               let jsonString = String(data: jsonData, encoding: .utf8) {
+                print("\n📄 Full Card Details JSON:")
+                print(jsonString)
+            }
+            
+            print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+            
+            return response
+            
+        } catch {
+            print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+            print("❌ Gemini AI Request Failed")
+            print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+            print("Error: \(error.localizedDescription)")
+            if let serverError = error as? ServerApiError {
+                print("Error Type: \(serverError)")
+            }
+            print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+            throw error
+        }
+    }
 }
 
 // MARK: - Data Transfer Objects (DTOs)
@@ -549,5 +722,112 @@ struct AnalyticsEvent: Encodable {
     let eventName: String
     let timestamp: Date
     let properties: [String: String]?
+}
+
+// MARK: - Gemini API Response Types
+
+/// Response from Gemini card analysis
+struct GeminiCardAnalysisResponse: Decodable {
+    /// The recommended PassKit format for this card
+    let passFormat: GeminiPassFormat
+    
+    /// Card details in JSON format matching Apple PassKit requirements
+    let cardDetails: GeminiCardDetails
+    
+    /// URL or base64-encoded image of the generated graphic design
+    let designImage: String
+    
+    /// Optional error message if processing had issues
+    let message: String?
+}
+
+/// PassKit format recommended by Gemini
+enum GeminiPassFormat: String, Codable {
+    case generic = "generic"
+    case coupon = "coupon"
+    case storeCard = "storeCard"
+    case eventTicket = "eventTicket"
+    case boardingPass = "boardingPass"
+}
+
+/// Card details extracted and formatted by Gemini
+struct GeminiCardDetails: Codable {
+    // Basic Information
+    let organizationName: String?
+    let description: String?
+    let logoText: String?
+    
+    // Barcode Information
+    let barcodeMessage: String?
+    let barcodeFormat: String? // "PKBarcodeFormatQR", "PKBarcodeFormatPDF417", "PKBarcodeFormatCode128", etc.
+    let barcodeAltText: String?
+    
+    // Header Fields (for generic, store cards)
+    let headerFields: [PassField]?
+    
+    // Primary Fields (main content)
+    let primaryFields: [PassField]?
+    
+    // Secondary Fields (additional info)
+    let secondaryFields: [PassField]?
+    
+    // Auxiliary Fields (supporting details)
+    let auxiliaryFields: [PassField]?
+    
+    // Back Fields (information on the back)
+    let backFields: [PassField]?
+    
+    // Colors (hex format)
+    let backgroundColor: String?
+    let foregroundColor: String?
+    let labelColor: String?
+    
+    // Expiration and Relevance
+    let expirationDate: String? // ISO 8601 format
+    let relevantDate: String? // ISO 8601 format
+    
+    // Store Card Specific (if passFormat is storeCard)
+    let storeCardInfo: StoreCardInfo?
+    
+    // Coupon Specific (if passFormat is coupon)
+    let couponInfo: CouponInfo?
+    
+    // Event Ticket Specific (if passFormat is eventTicket)
+    let eventInfo: EventInfo?
+}
+
+/// Field structure for PassKit passes
+struct PassField: Codable {
+    let key: String
+    let label: String?
+    let value: String
+    let textAlignment: String? // "PKTextAlignmentLeft", "PKTextAlignmentCenter", "PKTextAlignmentRight"
+}
+
+/// Store card specific information
+struct StoreCardInfo: Codable {
+    let membershipNumber: String?
+    let memberName: String?
+    let tierLevel: String?
+    let pointsBalance: String?
+}
+
+/// Coupon specific information
+struct CouponInfo: Codable {
+    let couponCode: String?
+    let discountAmount: String?
+    let expirationDate: String?
+    let termsAndConditions: String?
+}
+
+/// Event ticket specific information
+struct EventInfo: Codable {
+    let eventName: String?
+    let venueName: String?
+    let venueAddress: String?
+    let eventDate: String?
+    let eventTime: String?
+    let seatInfo: String?
+    let gateInfo: String?
 }
 
