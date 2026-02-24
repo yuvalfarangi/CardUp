@@ -76,7 +76,7 @@ router.post('/cardDataExtraction', upload.single('file'), async (req, res) => {
 Output only the raw JSON. No markdown or text.`;
 
         const result = await generateWithRetry({
-            model: "gemini-2.5-flash-lite",
+            model: "gemini-2.5-flash",
             contents: [{ role: "user", parts: [{ text: prompt }, imagePart] }]
         });
 
@@ -92,7 +92,7 @@ Output only the raw JSON. No markdown or text.`;
     }
 });
 
-// POST /api/gemini/cardDesignGenerating - Generate a card background image from a card photo
+// POST /api/gemini/cardDesignGenerating - Generate an SVG card background from a card photo
 router.post('/cardDesignGenerating', upload.single('file'), async (req, res) => {
     try {
         if (!req.file) {
@@ -108,26 +108,23 @@ router.post('/cardDesignGenerating', upload.single('file'), async (req, res) => 
             }
         };
 
-        const prompt = `Generate a 1125x432 card background. Use only abstract graphics, gradients, and brand patterns from the original. No text, logos, or data.`;
+        const prompt = `Analyze this card image and generate an SVG card background (1125x432 pixels) inspired by its visual style.
+Use abstract shapes, gradients, and geometric patterns that reflect the card's color palette.
+Do NOT include any text, logos, barcodes, or recognizable data from the card.
+Output only the raw SVG code starting with <svg and ending with </svg>. No markdown, no explanation.`;
 
         const result = await generateWithRetry({
-            model: "gemini-2.0-flash-exp-image-generation",
-            contents: [{ role: "user", parts: [{ text: prompt }, imagePart] }],
-            config: { responseModalities: ["TEXT", "IMAGE"] }
+            model: "gemini-2.5-flash",
+            contents: [{ role: "user", parts: [{ text: prompt }, imagePart] }]
         });
 
-        const candidates = result.candidates;
-        for (const candidate of candidates) {
-            for (const part of candidate.content.parts) {
-                if (part.inlineData) {
-                    return res.status(200).json({
-                        designImage: `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`
-                    });
-                }
-            }
-        }
+        let svgCode = result.text.trim();
+        // Strip markdown code fences if present
+        svgCode = svgCode.replace(/^```(?:svg|xml)?\n?/, '').replace(/\n?```$/, '').trim();
 
-        res.status(500).json({ error: 'No image was generated in the response' });
+        console.log('Generated SVG design:\n', svgCode);
+
+        res.status(200).json({ designSvg: svgCode });
     } catch (error) {
         console.error('Card design generation error:', error);
         res.status(500).json({ error: error.message });

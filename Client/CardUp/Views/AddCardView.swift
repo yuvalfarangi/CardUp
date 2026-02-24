@@ -28,8 +28,6 @@ struct AddCardView: View {
     @State private var createdCard: Card?
     @State private var showAddToWallet = false
     @State private var generatedPassData: Data?
-    @State private var error: String?
-    @State private var showErrorAlert = false
     
     // Animation states
     @State private var processingProgress: Double = 0.0
@@ -105,20 +103,14 @@ struct AddCardView: View {
                 await handlePhotoSelection(newValue)
             }
         }
-        .onChange(of: cardProcessingService.generatedPassData) { _, newData in
-            if newData != nil {
+        .onChange(of: cardProcessingService.isProcessing) { oldValue, newValue in
+            // When processing finishes (isProcessing becomes false)
+            if oldValue == true && newValue == false {
                 handleProcessingComplete()
             }
         }
         .onChange(of: cardProcessingService.processingProgress) { _, newProgress in
             processingProgress = newProgress
-        }
-        .onChange(of: cardProcessingService.error) { _, newError in
-            if let error = newError {
-                self.error = error
-                showErrorAlert = true
-                currentState = .initial
-            }
         }
         .onAppear {
             // Start glow animation on appear
@@ -145,15 +137,6 @@ struct AddCardView: View {
             onSuccess: handleWalletSuccess,
             onError: handleWalletError
         )
-        .alert("Error", isPresented: $showErrorAlert) {
-            Button("OK") {
-                error = nil
-            }
-        } message: {
-            if let error = error {
-                Text(error)
-            }
-        }
     }
     
     // MARK: - Action Handlers
@@ -223,27 +206,45 @@ struct AddCardView: View {
     }
     
     private func handleProcessingComplete() {
-        guard let geminiResponse = cardProcessingService.extractedData,
-              let passData = cardProcessingService.generatedPassData,
-              let card = createdCard else { return }
+        guard let card = createdCard else { return }
         
-        // Update card with generated pass data
-        card.pkpassData = passData
+        // Check if we have a generated pass or if it's a draft
+        let hasGeneratedPass = cardProcessingService.generatedPassData != nil
         
-        // Try to save changes
-        do {
-            try modelContext.save()
-        } catch {
-            print("Failed to save card: \(error)")
-        }
-        
-        // Show options to add to wallet or edit
-        currentState = .generating
-        generatedPassData = passData
-        
-        // Start glow animation for success state
-        withAnimation(.easeInOut(duration: 1.5).repeatForever(autoreverses: true)) {
-            glowOpacity = 0.8
+        if hasGeneratedPass {
+            // Server successfully generated a pass - show "Add to Wallet" option
+            generatedPassData = cardProcessingService.generatedPassData
+            
+            // Update card with generated pass data
+            card.pkpassData = generatedPassData
+            
+            // Try to save changes
+            do {
+                try modelContext.save()
+            } catch {
+                print("Failed to save card: \(error)")
+            }
+            
+            // Show options to add to wallet or edit
+            currentState = .generating
+            
+            // Start glow animation for success state
+            withAnimation(.easeInOut(duration: 1.5).repeatForever(autoreverses: true)) {
+                glowOpacity = 0.8
+            }
+        } else {
+            // Server analysis failed - card is marked as draft, go directly to edit view
+            print("ℹ️ Server analysis failed or unavailable - opening edit view for manual entry")
+            
+            // Try to save the draft card
+            do {
+                try modelContext.save()
+            } catch {
+                print("Failed to save draft card: \(error)")
+            }
+            
+            // Go directly to edit view for manual entry
+            showEditCard = true
         }
     }
     
@@ -277,8 +278,8 @@ struct AddCardView: View {
     }
     
     private func handleWalletError(_ error: Error) {
-        self.error = error.localizedDescription
-        showErrorAlert = true
+        print("Failed to add to wallet: \(error.localizedDescription)")
+        // Continue gracefully - user can try again or edit the card
     }
 }
 
@@ -530,13 +531,13 @@ struct ProcessingView: View {
         case 0.0..<0.2:
             return "Preparing image for analysis..."
         case 0.2..<0.4:
-            return "Sending to Gemini AI server..."
+            return "Sending to AI server for analysis..."
         case 0.4..<0.6:
-            return "AI analyzing card format and details..."
+            return "Analyzing card details..."
         case 0.6..<0.8:
-            return "Downloading generated design..."
+            return "Extracting colors and design..."
         case 0.8..<1.0:
-            return "Finalizing wallet pass..."
+            return "Finalizing card details..."
         default:
             return "Complete!"
         }

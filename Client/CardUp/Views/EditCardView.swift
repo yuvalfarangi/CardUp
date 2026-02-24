@@ -7,6 +7,7 @@
 import SwiftUI
 import SwiftData
 import PassKit
+import WebKit
 
 struct EditCardView: View {
     let card: Card
@@ -223,7 +224,7 @@ struct EditCardView: View {
         
         primaryColor = card.primaryColor
         secondaryColor = card.foregroundUIColor
-        
+    
         // Load icon settings - use existing SF Symbol or default
         selectedIconName = card.logoSFSymbol ?? "creditcard.fill"
         selectedIconColor = card.logoColor
@@ -243,6 +244,45 @@ struct EditCardView: View {
             
             do {
                 saveCardData()
+                
+                // First, request banner image generation from server
+                let cardDesignRequest = CardDesignRequest(
+                    organizationName: companyName.isEmpty ? nil : companyName,
+                    description: cardName.isEmpty ? nil : cardName,
+                    logoText: companyName.isEmpty ? nil : companyName,
+                    backgroundColor: primaryColor.toHex(),
+                    foregroundColor: secondaryColor.toHex(),
+                    designStyle: nil,
+                    additionalContext: nil
+                )
+                
+                // Request the design from the server (optional, continues if fails)
+                do {
+                    print("🎨 Requesting banner design from server...")
+                    let designResponse = try await ServerApi.shared.generateCardDesign(cardDetails: cardDesignRequest)
+                    
+                    print("📥 Received design response:")
+                    print("  • Design Image length: \(designResponse.designImage.count) characters")
+                    print("  • First 100 chars: \(String(designResponse.designImage.prefix(100)))")
+                    print("  • Contains <svg: \(designResponse.designImage.contains("<svg"))")
+                    print("  • Starts with 'data:': \(designResponse.designImage.hasPrefix("data:"))")
+                    
+                    // Convert SVG to PNG at 1125x432 pixels
+                    if let bannerImage = await convertSVGToPNG(svgString: designResponse.designImage, width: 1125, height: 432) {
+                        // Save the generated banner image to the card
+                        await MainActor.run {
+                            card.bannerImageData = bannerImage.jpegData(compressionQuality: 0.9)
+                            selectedBackgroundImage = bannerImage
+                            isBannerImageRemoved = false
+                        }
+                        print("✅ Banner image generated and saved successfully")
+                    } else {
+                        print("⚠️ Failed to convert SVG to image, using existing banner")
+                    }
+                } catch {
+                    print("⚠️ Banner generation failed: \(error.localizedDescription). Continuing with existing banner.")
+                    // Continue pass generation even if banner generation fails
+                }
                 
                 var additionalTextArray: [String] = []
                 if !headerField.isEmpty { additionalTextArray.append(headerField) }
@@ -278,6 +318,113 @@ struct EditCardView: View {
                 }
             }
         }
+    }
+    
+    /// Converts an SVG string to a PNG UIImage at the specified dimensions
+    /// - Parameters:
+    ///   - svgString: The SVG code as a string
+    ///   - width: Target width in pixels
+    ///   - height: Target height in pixels
+    /// - Returns: UIImage or nil if conversion fails
+    private func convertSVGToPNG(svgString: String, width: CGFloat, height: CGFloat) async -> UIImage? {
+        // Check if the string is actually SVG
+        guard svgString.contains("<svg") else {
+            // If it's a base64 image or URL, try to decode it
+            if svgString.hasPrefix("data:image") {
+                return decodeBase64Image(svgString)
+            }
+            print("⚠️ SVG string does not contain <svg> tag")
+            return nil
+        }
+        
+        print("🎨 Converting SVG to PNG at \(Int(width))x\(Int(height)) pixels...")
+        
+        // Create HTML wrapper for the SVG
+        let htmlString = """
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <style>
+                * { margin: 0; padding: 0; }
+                html, body {
+                    width: \(width)px;
+                    height: \(height)px;
+                    overflow: hidden;
+                }
+                svg {
+                    width: 100%;
+                    height: 100%;
+                    display: block;
+                }
+            </style>
+        </head>
+        <body>
+            \(svgString)
+        </body>
+        </html>
+        """
+        
+        // Use async/await with continuation for WebView rendering
+        return await withCheckedContinuation { continuation in
+            DispatchQueue.main.async {
+                // Create a WebKit WKWebView to render the SVG
+                let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: width, height: height))
+                webView.isOpaque = false
+                webView.backgroundColor = .clear
+                
+                // Load the HTML
+                webView.loadHTMLString(htmlString, baseURL: nil)
+                
+                // Wait for rendering to complete
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                    let config = WKSnapshotConfiguration()
+                    config.rect = CGRect(x: 0, y: 0, width: width, height: height)
+                    
+                    webView.takeSnapshot(with: config) { image, error in
+                        if let error = error {
+                            print("❌ Failed to capture WebView snapshot: \(error.localizedDescription)")
+                            continuation.resume(returning: nil)
+                        } else if let image = image {
+                            print("✅ Successfully converted SVG to PNG (\(Int(image.size.width))x\(Int(image.size.height)))")
+                            continuation.resume(returning: image)
+                        } else {
+                            print("❌ No image captured from WebView")
+                            continuation.resume(returning: nil)
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    /// Decodes a base64 encoded image string
+    /// - Parameter base64String: String in format "data:image/png;base64,..."
+    /// - Returns: UIImage or nil if decoding fails
+    private func decodeBase64Image(_ base64String: String) -> UIImage? {
+        // Extract the base64 data portion
+        let components = base64String.components(separatedBy: ",")
+        guard components.count == 2 else {
+            print("⚠️ Invalid base64 image string format")
+            return nil
+        }
+        
+        let base64Data = components[1]
+        
+        // Decode base64 string to Data
+        guard let imageData = Data(base64Encoded: base64Data, options: .ignoreUnknownCharacters) else {
+            print("❌ Failed to decode base64 image data")
+            return nil
+        }
+        
+        // Create UIImage from data
+        guard let image = UIImage(data: imageData) else {
+            print("❌ Failed to create UIImage from decoded data")
+            return nil
+        }
+        
+        print("✅ Successfully decoded base64 image (\(Int(image.size.width))x\(Int(image.size.height)))")
+        return image
     }
     
     private func saveCardData() {

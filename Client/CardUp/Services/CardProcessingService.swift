@@ -9,6 +9,7 @@
 import Foundation
 import UIKit
 import SwiftUI
+import WebKit
 
 /// A comprehensive service for processing physical card images into Apple Wallet passes using AI-powered analysis.
 ///
@@ -388,6 +389,9 @@ final class CardProcessingService {
         generatedPassData = nil
         processingProgress = 0.0
         
+        // Track if we got data from the server successfully
+        var serverAnalysisSucceeded = false
+        
         do {
             // Step 1: Compress and prepare image (10%)
             updateProgress(0.10, status: "Preparing image...")
@@ -398,101 +402,147 @@ final class CardProcessingService {
             print("📸 Image compressed: \(imageData.count) bytes")
             
             // Step 2: Send to Gemini via server (30%)
+            // This is now NON-FATAL - if it fails, we continue with defaults
             updateProgress(0.30, status: "Analyzing card with AI...")
-            let geminiResponse = try await serverApi.analyzeCardWithGemini(imageData: imageData)
             
-            print("✅ Gemini analysis complete:")
-            print("   Format: \(geminiResponse.passFormat.rawValue)")
-            print("   Organization: \(geminiResponse.cardDetails.organizationName ?? "nil")")
-            print("   Barcode: \(geminiResponse.cardDetails.barcodeMessage ?? "nil")")
-            
-            extractedData = geminiResponse
-            
-            // Step 3: Update card model first so we have the details for design generation (45%)
-            updateProgress(0.45, status: "Saving card details...")
-            updateCard(card, with: geminiResponse)
-            
-            // Step 4: Generate design/banner image using the separate design generation endpoint (65%)
-            // Always call the design generation endpoint - this is separate from card data extraction
-            updateProgress(0.50, status: "Generating card design...")
-            
-            let designRequest = CardDesignRequest(
-                organizationName: card.organizationName.isEmpty ? nil : card.organizationName,
-                description: card.passDescription.isEmpty ? nil : card.passDescription,
-                logoText: card.logoText,
-                backgroundColor: card.backgroundColor,
-                foregroundColor: card.foregroundColor,
-                designStyle: nil,
-                additionalContext: nil
-            )
-            
-            // Design generation is fully non-fatal: try? silently converts any error to nil
-            // so the pipeline always continues even if the server returns 500 / quota exceeded
-            if let designResponse = try? await serverApi.generateCardDesign(
-                cardDetails: designRequest,
-                imageData: imageData
-            ) {
-                updateProgress(0.60, status: "Downloading generated design...")
-                let designImageData = try? await downloadDesignImage(from: designResponse.designImage)
-                card.bannerImageData = designImageData
-                if let bytes = designImageData {
-                    print("🎨 Design generated and set as banner: \(bytes.count) bytes")
+            do {
+                let geminiResponse = try await serverApi.analyzeCardWithGemini(imageData: imageData)
+                
+                print("✅ Gemini analysis complete:")
+                print("   Format: \(geminiResponse.passFormat.rawValue)")
+                print("   Organization: \(geminiResponse.cardDetails.organizationName ?? "nil")")
+                print("   Barcode: \(geminiResponse.cardDetails.barcodeMessage ?? "nil")")
+                
+                extractedData = geminiResponse
+                serverAnalysisSucceeded = true
+                
+                // Step 3: Update card model with AI-extracted data (45%)
+                updateProgress(0.45, status: "Saving card details...")
+                updateCard(card, with: geminiResponse)
+                
+                // Step 4: Generate design/banner image using the separate design generation endpoint (65%)
+                // Always call the design generation endpoint - this is separate from card data extraction
+                updateProgress(0.50, status: "Generating card design...")
+                
+                let designRequest = CardDesignRequest(
+                    organizationName: card.organizationName.isEmpty ? nil : card.organizationName,
+                    description: card.passDescription.isEmpty ? nil : card.passDescription,
+                    logoText: card.logoText,
+                    backgroundColor: card.backgroundColor,
+                    foregroundColor: card.foregroundColor,
+                    designStyle: nil,
+                    additionalContext: nil
+                )
+                
+                // Design generation is fully non-fatal: try? silently converts any error to nil
+                // so the pipeline always continues even if the server returns 500 / quota exceeded
+                if let designResponse = try? await serverApi.generateCardDesign(
+                    cardDetails: designRequest,
+                    imageData: imageData
+                ) {
+                    updateProgress(0.60, status: "Downloading generated design...")
+                    let designImageData = try? await downloadDesignImage(from: designResponse.designImage)
+                    card.bannerImageData = designImageData
+                    if let bytes = designImageData {
+                        print("🎨 Design generated and set as banner: \(bytes.count) bytes")
+                    } else {
+                        print("⚠️ Design downloaded but no image data — banner will use background color")
+                    }
                 } else {
-                    print("⚠️ Design downloaded but no image data — banner will use background color")
+                    card.bannerImageData = nil
+                    print("⚠️ Design generation skipped — banner will use background color")
                 }
-            } else {
-                card.bannerImageData = nil
-                print("⚠️ Design generation skipped — banner will use background color")
+                
+                updateProgress(0.65, status: "Design complete...")
+                
+            } catch {
+                // Server analysis failed - log it but continue with defaults
+                print("⚠️ Server analysis failed: \(error.localizedDescription)")
+                print("⚠️ Continuing with default card values for manual entry...")
+                
+                serverAnalysisSucceeded = false
+                
+                // Populate card with minimal default values for manual entry
+                updateProgress(0.45, status: "Using default values...")
+                populateCardWithDefaults(card)
             }
             
-            updateProgress(0.65, status: "Design complete...")
-            
             // Step 5: Generate colors if not provided (70%)
+            // This always runs - extract colors from the original image
             updateProgress(0.70, status: "Analyzing colors...")
             if card.dominantColorsHex.isEmpty {
                 let colors = await extractDominantColors(from: image)
                 card.dominantColorsHex = colors
+                
+                // Also set background/foreground if not set
+                if !colors.isEmpty {
+                    if card.backgroundColor.isEmpty || card.backgroundColor == "#3B82F6" {
+                        card.backgroundColor = colors[0]
+                    }
+                    if card.foregroundColor.isEmpty || card.foregroundColor == "#FFFFFF" {
+                        // Use white or black based on background brightness
+                        card.foregroundColor = isBrightColor(colors[0]) ? "#000000" : "#FFFFFF"
+                    }
+                }
             }
             
             // Step 6: Process logo if available (80%)
-            updateProgress(0.80, status: "Processing logo...")
-            if let logoImage = try await extractLogoFromDesign(image) {
-                card.logoImageData = logoImage.pngData()
+            // Only if we don't have SF Symbol set
+            if card.logoSFSymbol == nil || card.logoSFSymbol == "creditcard.fill" {
+                updateProgress(0.80, status: "Processing logo...")
+                if let logoImage = try await extractLogoFromDesign(image) {
+                    card.logoImageData = logoImage.pngData()
+                }
             }
             
-            // Step 7: Generate Pass (95%)
-            updateProgress(0.95, status: "Generating wallet pass...")
-            let passData = try await passKitIntegrator.generateWalletPassFromGemini(
-                for: card,
-                with: geminiResponse
-            )
+            // Step 7: Skip pass generation if server analysis failed
+            // User will manually edit and regenerate later
+            if serverAnalysisSucceeded {
+                updateProgress(0.95, status: "Generating wallet pass...")
+                if let geminiResponse = extractedData {
+                    let passData = try await passKitIntegrator.generateWalletPassFromGemini(
+                        for: card,
+                        with: geminiResponse
+                    )
+                    
+                    generatedPassData = passData
+                    card.pkpassData = passData
+                    card.isDraft = false
+                    
+                    print("✅ Pass generation complete!")
+                }
+            } else {
+                // Mark as draft for manual editing
+                card.isDraft = true
+                print("ℹ️ Card marked as draft - user will manually enter details")
+            }
             
             updateProgress(1.0, status: "Complete!")
             
-            generatedPassData = passData
-            card.pkpassData = passData
-            card.isDraft = false
-            
-            print("✅ Pass generation complete!")
-            
-        } catch let error as ServerApiError {
-            await MainActor.run {
-                self.error = "Server error: \(error.errorDescription ?? error.localizedDescription)"
-                self.processingProgress = 0.0
-                self.isProcessing = false
-            }
         } catch let error as CardProcessingError {
+            // Only image compression errors are truly fatal
             await MainActor.run {
                 self.error = error.errorDescription
                 self.processingProgress = 0.0
                 self.isProcessing = false
             }
+            return
         } catch {
-            await MainActor.run {
-                self.error = "Failed to process card: \(error.localizedDescription)"
-                self.processingProgress = 0.0
-                self.isProcessing = false
+            // Unexpected error - populate with defaults anyway
+            print("⚠️ Unexpected error: \(error.localizedDescription)")
+            print("⚠️ Continuing with default card values...")
+            
+            populateCardWithDefaults(card)
+            
+            let colors = await extractDominantColors(from: image)
+            card.dominantColorsHex = colors
+            if !colors.isEmpty {
+                card.backgroundColor = colors[0]
+                card.foregroundColor = isBrightColor(colors[0]) ? "#000000" : "#FFFFFF"
             }
+            
+            card.isDraft = true
+            updateProgress(1.0, status: "Complete!")
         }
         
         isProcessing = false
@@ -597,9 +647,9 @@ final class CardProcessingService {
         return UIGraphicsGetImageFromCurrentImageContext()
     }
     
-    /// Downloads or decodes a banner/strip design image from either a URL or base64-encoded data URI.
+    /// Downloads or decodes a banner/strip design image from various formats including SVG.
     ///
-    /// This method handles two different source formats returned by the Gemini design generation API
+    /// This method handles multiple source formats returned by the Gemini design generation API
     /// (from `/api/gemini/cardDesignGenerating` endpoint):
     ///
     /// ## Expected Image Specifications
@@ -607,8 +657,22 @@ final class CardProcessingService {
     /// The design image should be a strip/banner image for Apple PassKit generic passes:
     /// - **Size**: 1125 x 432 pixels (@3x resolution)
     /// - **Alternative sizes**: 750 x 288 (@2x) or 375 x 144 (@1x)
-    /// - **Format**: PNG or JPEG
+    /// - **Format**: PNG, JPEG, or SVG
     /// - **Usage**: Displayed as a horizontal strip below the logo/header section of the pass
+    ///
+    /// ## Supported Formats
+    ///
+    /// 1. **SVG String**: Plain SVG markup (e.g., "<svg>...</svg>")
+    /// 2. **Data URI**: Base64-encoded image (e.g., "data:image/png;base64,...")
+    /// 3. **HTTP URL**: Remote image URL (e.g., "https://example.com/design.png")
+    ///
+    /// ## SVG Rendering
+    ///
+    /// When an SVG string is detected (contains "<svg"), the method:
+    /// 1. Creates an HTML wrapper with proper dimensions
+    /// 2. Uses WKWebView to render the SVG
+    /// 3. Captures a bitmap snapshot at the target size (1125x432)
+    /// 4. Returns the rendered image as PNG data
     ///
     /// ## Data URI Format
     ///
@@ -639,16 +703,20 @@ final class CardProcessingService {
     ///
     /// ## Validation
     ///
-    /// After downloading/decoding, the method validates that the data is a valid image
+    /// After downloading/decoding/rendering, the method validates that the data is a valid image
     /// by attempting to create a UIImage. This ensures corrupted data doesn't get saved.
     ///
-    /// - Parameter source: Either a data URI string or HTTP(S) URL string from the design generation response
-    /// - Returns: The image data if successfully retrieved/decoded and validated, or `nil` on failure
+    /// - Parameter source: Either SVG string, data URI string, or HTTP(S) URL string from the design generation response
+    /// - Returns: The image data (as PNG) if successfully retrieved/decoded/rendered and validated, or `nil` on failure
     ///
-    /// - Note: This method uses standard URLSession which respects system proxy settings and SSL pinning.
+    /// - Note: SVG rendering requires main thread access for WKWebView
     ///
     /// - Example:
     /// ```swift
+    /// // SVG string
+    /// let svg = "<svg width='1125' height='432'>...</svg>"
+    /// let imageData = try await downloadDesignImage(from: svg)
+    ///
     /// // Base64 data URI
     /// let dataUri = "data:image/png;base64,iVBORw0KGgo..."
     /// let imageData = try await downloadDesignImage(from: dataUri)
@@ -670,8 +738,24 @@ final class CardProcessingService {
         
         var imageData: Data? = nil
         
-        // Check if it's a base64 data URI (format: "data:image/png;base64,...")
-        if source.hasPrefix("data:image") {
+        // PRIORITY 1: Check if it's SVG content
+        let trimmedSource = source.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedSource.contains("<svg") {
+            print("🎨 Detected SVG content, rendering to PNG...")
+            
+            // Render SVG to PNG using WebKit
+            if let renderedImage = await convertSVGToPNG(svgString: source, width: 1125, height: 432) {
+                imageData = renderedImage.pngData()
+                if let data = imageData {
+                    print("✅ SVG rendered to PNG: \(data.count) bytes")
+                }
+            } else {
+                print("⚠️ Failed to render SVG to PNG")
+                return nil
+            }
+        }
+        // PRIORITY 2: Check if it's a base64 data URI (format: "data:image/png;base64,...")
+        else if source.hasPrefix("data:image") {
             // Extract base64 data after the comma
             if let base64String = source.components(separatedBy: ",").last,
                let decodedData = Data(base64Encoded: base64String) {
@@ -681,8 +765,9 @@ final class CardProcessingService {
                 print("⚠️ Failed to decode base64 design image")
                 return nil
             }
-        } else {
-            // Otherwise treat as URL
+        }
+        // PRIORITY 3: Treat as URL
+        else if source.hasPrefix("http://") || source.hasPrefix("https://") {
             guard let url = URL(string: source) else {
                 print("⚠️ Invalid design image URL: \(source)")
                 return nil
@@ -704,6 +789,9 @@ final class CardProcessingService {
                 print("⚠️ Network error downloading design image: \(error.localizedDescription)")
                 return nil
             }
+        } else {
+            print("⚠️ Unrecognized design image format (not SVG, data URI, or URL)")
+            return nil
         }
         
         // Validate that the data is actually a valid image
@@ -733,6 +821,92 @@ final class CardProcessingService {
         }
         
         return nil
+    }
+    
+    /// Converts an SVG string to a PNG UIImage at the specified dimensions using WebKit
+    /// - Parameters:
+    ///   - svgString: The SVG code as a string
+    ///   - width: Target width in pixels
+    ///   - height: Target height in pixels
+    /// - Returns: UIImage or nil if conversion fails
+    private func convertSVGToPNG(svgString: String, width: CGFloat, height: CGFloat) async -> UIImage? {
+        print("🎨 Converting SVG to PNG at \(Int(width))x\(Int(height)) pixels...")
+        
+        // Create HTML wrapper for the SVG
+        let htmlString = """
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <style>
+                * { margin: 0; padding: 0; }
+                html, body {
+                    width: \(width)px;
+                    height: \(height)px;
+                    overflow: hidden;
+                }
+                svg {
+                    width: 100%;
+                    height: 100%;
+                    display: block;
+                }
+            </style>
+        </head>
+        <body>
+            \(svgString)
+        </body>
+        </html>
+        """
+        
+        // Use async/await with continuation for WebView rendering
+        return await withCheckedContinuation { continuation in
+            Task { @MainActor in
+                // Create a WebKit WKWebView to render the SVG
+                let config = WKWebViewConfiguration()
+                config.suppressesIncrementalRendering = false
+                
+                let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: width, height: height), configuration: config)
+                webView.isOpaque = false
+                webView.backgroundColor = .clear
+                
+                // Keep a strong reference to prevent premature deallocation
+                var webViewRef: WKWebView? = webView
+                
+                // Load the HTML
+                webView.loadHTMLString(htmlString, baseURL: nil)
+                
+                // Wait for rendering to complete
+                Task {
+                    // Try multiple delay times to ensure rendering completes
+                    try? await Task.sleep(nanoseconds: 2_000_000_000) // 2 seconds
+                    
+                    guard let webView = webViewRef else {
+                        print("❌ WebView was deallocated before snapshot")
+                        continuation.resume(returning: nil)
+                        return
+                    }
+                    
+                    let config = WKSnapshotConfiguration()
+                    config.rect = CGRect(x: 0, y: 0, width: width, height: height)
+                    
+                    webView.takeSnapshot(with: config) { image, error in
+                        if let error = error {
+                            print("❌ Failed to capture WebView snapshot: \(error.localizedDescription)")
+                            continuation.resume(returning: nil)
+                        } else if let image = image {
+                            print("✅ Successfully converted SVG to PNG (\(Int(image.size.width))x\(Int(image.size.height)))")
+                            continuation.resume(returning: image)
+                        } else {
+                            print("❌ No image captured from WebView")
+                            continuation.resume(returning: nil)
+                        }
+                        
+                        // Clear the reference
+                        webViewRef = nil
+                    }
+                }
+            }
+        }
     }
     
     /// Updates a Card model with data extracted from Gemini AI analysis.
@@ -925,6 +1099,64 @@ final class CardProcessingService {
         
         // Fallback - return as is
         return color
+    }
+    
+    /// Populates a card with sensible default values for manual entry
+    /// This is called when server analysis fails or is unavailable
+    private func populateCardWithDefaults(_ card: Card) {
+        card.passTypeIdentifier = "pass.com.example.generic"
+        card.formatVersion = 1
+        
+        // Default text values
+        card.organizationName = "Card Name"
+        card.passDescription = "Loyalty Card"
+        card.logoText = "Card"
+        
+        // Default barcode
+        card.barcodeMessage = "123456789"
+        card.barcodeFormat = "PKBarcodeFormatQR"
+        card.barcodeMessageEncoding = "iso-8859-1"
+        
+        // Default colors (nice blue theme)
+        card.backgroundColor = "#3B82F6"
+        card.foregroundColor = "#FFFFFF"
+        card.labelColor = "#E0E7FF"
+        
+        // Default fields for manual entry
+        let defaultPrimaryField = PassField(
+            key: "membershipNumber",
+            label: "Member",
+            value: "",
+            textAlignment: nil
+        )
+        card.updatePrimaryFields([defaultPrimaryField])
+        
+        // Mark as draft
+        card.isDraft = true
+        
+        print("📝 Card populated with default values for manual entry")
+    }
+    
+    /// Determines if a hex color is bright (light) or dark
+    /// Used to choose appropriate text color (black for light backgrounds, white for dark)
+    private func isBrightColor(_ hexColor: String) -> Bool {
+        // Remove # if present
+        let hex = hexColor.trimmingCharacters(in: CharacterSet(charactersIn: "#"))
+        
+        // Convert hex to RGB
+        var rgb: UInt64 = 0
+        Scanner(string: hex).scanHexInt64(&rgb)
+        
+        let r = Double((rgb >> 16) & 0xFF) / 255.0
+        let g = Double((rgb >> 8) & 0xFF) / 255.0
+        let b = Double(rgb & 0xFF) / 255.0
+        
+        // Calculate relative luminance (perceived brightness)
+        // Using the formula from WCAG 2.0
+        let luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b
+        
+        // If luminance > 0.5, it's a bright color
+        return luminance > 0.5
     }
     
     /// Maps Gemini's barcode format strings to Apple PassKit barcode format constants.

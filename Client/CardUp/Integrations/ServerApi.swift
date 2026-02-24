@@ -22,6 +22,9 @@ final class ServerApi {
     
     /// URLSession for network requests
     private let session: URLSession
+
+    /// URLSession with extended timeouts for long-running AI generation requests
+    private let longTimeoutSession: URLSession
     
     /// JSON encoder with consistent configuration
     private let encoder: JSONEncoder
@@ -45,6 +48,12 @@ final class ServerApi {
         configuration.timeoutIntervalForRequest = 30
         configuration.timeoutIntervalForResource = 60
         self.session = URLSession(configuration: configuration)
+
+        // Configure a separate session for AI generation endpoints (Gemini can take 60-90s)
+        let longTimeoutConfiguration = URLSessionConfiguration.default
+        longTimeoutConfiguration.timeoutIntervalForRequest = 120
+        longTimeoutConfiguration.timeoutIntervalForResource = 180
+        self.longTimeoutSession = URLSession(configuration: longTimeoutConfiguration)
         
         // Configure JSON encoder/decoder
         self.encoder = JSONEncoder()
@@ -282,6 +291,252 @@ final class ServerApi {
         let _: EmptyResponse = try await performRequest(request)
     }
     
+    /// Special POST request for card design that can handle both JSON and plain SVG responses
+    /// - Parameters:
+    ///   - endpoint: The API endpoint path
+    ///   - body: The request body to encode and send
+    /// - Returns: CardDesignResponse with the design image (SVG string)
+    private func postCardDesignRequest<U: Encodable>(
+        endpoint: String,
+        body: U
+    ) async throws -> CardDesignResponse {
+        var request = try buildRequest(
+            endpoint: endpoint,
+            method: "POST"
+        )
+        
+        request.httpBody = try encoder.encode(body)
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        print("📡 \(request.httpMethod ?? "REQUEST") \(request.url?.absoluteString ?? "")")
+        
+        do {
+            let (data, response) = try await longTimeoutSession.data(for: request)
+
+            guard let httpResponse = response as? HTTPURLResponse else {
+                throw ServerApiError.invalidResponse
+            }
+
+            print("✅ Response: \(httpResponse.statusCode)")
+
+            // Log content type for debugging
+            let contentType = httpResponse.value(forHTTPHeaderField: "Content-Type") ?? "unknown"
+            print("📄 Content-Type: \(contentType)")
+            print("📦 Response data size: \(data.count) bytes")
+
+            // Check for successful status codes
+            guard (200...299).contains(httpResponse.statusCode) else {
+                // Try to decode error response
+                if let errorResponse = try? decoder.decode(ErrorResponse.self, from: data) {
+                    throw ServerApiError.serverError(
+                        statusCode: httpResponse.statusCode,
+                        message: errorResponse.message
+                    )
+                }
+                throw ServerApiError.httpError(statusCode: httpResponse.statusCode)
+            }
+
+            // PRIORITY 1: Try to convert to text/string first
+            if let responseText = String(data: data, encoding: .utf8), !responseText.isEmpty {
+                print("📝 Response as text (first 100 chars): \(String(responseText.prefix(100)))")
+
+                let trimmedText = responseText.trimmingCharacters(in: .whitespacesAndNewlines)
+
+                // PRIORITY 1A: Try JSON decoding FIRST (most common case)
+                if trimmedText.hasPrefix("{") || trimmedText.hasPrefix("[") {
+                    print("🔍 Response looks like JSON, attempting to decode...")
+                    do {
+                        let jsonResponse = try decoder.decode(CardDesignResponse.self, from: data)
+                        print("✅ Successfully decoded as JSON CardDesignResponse")
+                        return jsonResponse
+                    } catch {
+                        print("⚠️ JSON decoding failed: \(error)")
+                        // Fall through to other methods
+                    }
+                }
+
+                // PRIORITY 1B: Check if it's pure SVG (starts with < tag)
+                if trimmedText.hasPrefix("<") {
+                    print("✅ Detected pure SVG/XML content in response")
+                    print("📦 Parsing as plain SVG text")
+                    print("  • Length: \(responseText.count) characters")
+
+                    // Return a CardDesignResponse with the SVG string (bypass Decodable)
+                    return CardDesignResponse(designImage: responseText, message: nil)
+                }
+
+                // PRIORITY 1C: Check content type hints for text/svg
+                let isTextResponse = contentType.contains("text") ||
+                                   contentType.contains("svg") ||
+                                   contentType.contains("xml") ||
+                                   contentType.contains("html")
+
+                if isTextResponse {
+                    print("📦 Parsing as plain text response (based on Content-Type: \(contentType))")
+                    print("  • Length: \(responseText.count) characters")
+
+                    // Return as-is
+                    return CardDesignResponse(designImage: responseText, message: nil)
+                }
+
+                // PRIORITY 2: Final fallback - return whatever text we got
+                print("📦 Fallback: Returning response as-is")
+                return CardDesignResponse(designImage: responseText, message: nil)
+            }
+
+            // If we can't convert to text at all, throw an error
+            throw ServerApiError.invalidResponse
+
+        } catch let error as ServerApiError {
+            throw error
+        } catch {
+            print("❌ Network error: \(error.localizedDescription)")
+            throw ServerApiError.networkError(error)
+        }
+    }
+
+    /// Special multipart POST request for card design that can handle both JSON and plain SVG responses
+    /// - Parameters:
+    ///   - endpoint: The API endpoint path
+    ///   - data: The file data to upload
+    ///   - fileName: The name of the file
+    ///   - mimeType: The MIME type of the file
+    ///   - additionalFields: Optional additional form fields
+    /// - Returns: CardDesignResponse with the design image (SVG string)
+    private func postMultipartCardDesign(
+        endpoint: String,
+        data: Data,
+        fileName: String,
+        mimeType: String,
+        additionalFields: [String: String]? = nil
+    ) async throws -> CardDesignResponse {
+        var request = try buildRequest(
+            endpoint: endpoint,
+            method: "POST"
+        )
+        
+        let boundary = "Boundary-\(UUID().uuidString)"
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        
+        print("📦 Building multipart request:")
+        print("  • Boundary: \(boundary)")
+        print("  • File name: \(fileName)")
+        print("  • MIME type: \(mimeType)")
+        print("  • File size: \(data.count) bytes")
+        
+        var body = Data()
+        
+        // Add additional fields if provided
+        if let fields = additionalFields {
+            print("  • Additional fields: \(fields.count)")
+            for (key, value) in fields {
+                body.append("--\(boundary)\r\n".data(using: .utf8)!)
+                body.append("Content-Disposition: form-data; name=\"\(key)\"\r\n\r\n".data(using: .utf8)!)
+                body.append("\(value)\r\n".data(using: .utf8)!)
+                print("    - \(key): \(value.prefix(100))...")
+            }
+        }
+        
+        // Add file data
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"file\"; filename=\"\(fileName)\"\r\n".data(using: .utf8)!)
+        body.append("Content-Type: \(mimeType)\r\n\r\n".data(using: .utf8)!)
+        body.append(data)
+        body.append("\r\n".data(using: .utf8)!)
+        body.append("--\(boundary)--\r\n".data(using: .utf8)!)
+        
+        request.httpBody = body
+        
+        print("  • Total body size: \(body.count) bytes")
+        print("  • Content-Type header: multipart/form-data; boundary=\(boundary)")
+        
+        print("📡 \(request.httpMethod ?? "REQUEST") \(request.url?.absoluteString ?? "")")
+
+        do {
+            let (responseData, response) = try await longTimeoutSession.data(for: request)
+            
+            guard let httpResponse = response as? HTTPURLResponse else {
+                throw ServerApiError.invalidResponse
+            }
+            
+            print("✅ Response: \(httpResponse.statusCode)")
+            
+            // Log content type for debugging
+            let contentType = httpResponse.value(forHTTPHeaderField: "Content-Type") ?? "unknown"
+            print("📄 Content-Type: \(contentType)")
+            print("📦 Response data size: \(responseData.count) bytes")
+            
+            // Check for successful status codes
+            guard (200...299).contains(httpResponse.statusCode) else {
+                // Try to decode error response
+                if let errorResponse = try? decoder.decode(ErrorResponse.self, from: responseData) {
+                    throw ServerApiError.serverError(
+                        statusCode: httpResponse.statusCode,
+                        message: errorResponse.message
+                    )
+                }
+                throw ServerApiError.httpError(statusCode: httpResponse.statusCode)
+            }
+            
+            // PRIORITY 1: Try to convert to text/string first
+            if let responseText = String(data: responseData, encoding: .utf8), !responseText.isEmpty {
+                print("📝 Response as text (first 100 chars): \(String(responseText.prefix(100)))")
+                
+                let trimmedText = responseText.trimmingCharacters(in: .whitespacesAndNewlines)
+                
+                // PRIORITY 1A: Try JSON decoding FIRST (most common case)
+                if trimmedText.hasPrefix("{") || trimmedText.hasPrefix("[") {
+                    print("🔍 Response looks like JSON, attempting to decode...")
+                    do {
+                        let jsonResponse = try decoder.decode(CardDesignResponse.self, from: responseData)
+                        print("✅ Successfully decoded as JSON CardDesignResponse")
+                        return jsonResponse
+                    } catch {
+                        print("⚠️ JSON decoding failed: \(error)")
+                        // Fall through to other methods
+                    }
+                }
+                
+                // PRIORITY 1B: Check if it's pure SVG (starts with < tag)
+                if trimmedText.hasPrefix("<") {
+                    print("✅ Detected pure SVG/XML content in response")
+                    print("📦 Parsing as plain SVG text")
+                    print("  • Length: \(responseText.count) characters")
+                    
+                    // Return a CardDesignResponse with the SVG string (bypass Decodable)
+                    return CardDesignResponse(designImage: responseText, message: nil)
+                }
+                
+                // PRIORITY 1C: Check content type hints for text/svg
+                let isTextResponse = contentType.contains("text") || 
+                                   contentType.contains("svg") || 
+                                   contentType.contains("xml") ||
+                                   contentType.contains("html")
+                
+                if isTextResponse {
+                    print("📦 Parsing as plain text response (based on Content-Type: \(contentType))")
+                    print("  • Length: \(responseText.count) characters")
+                    
+                    // Return as-is
+                    return CardDesignResponse(designImage: responseText, message: nil)
+                }
+                
+                // PRIORITY 2: Final fallback - return whatever text we got
+                print("📦 Fallback: Returning response as-is")
+                return CardDesignResponse(designImage: responseText, message: nil)
+            }
+            
+            // If we can't convert to text at all, throw an error
+            throw ServerApiError.invalidResponse
+            
+        } catch let error as ServerApiError {
+            throw error
+        } catch {
+            print("❌ Network error: \(error.localizedDescription)")
+            throw ServerApiError.networkError(error)
+        }
+    }
+    
     /// Performs a HEAD request (to check if a resource exists)
     /// - Parameter endpoint: The API endpoint path
     /// - Returns: The HTTP status code
@@ -511,6 +766,9 @@ extension ServerApi {
     /// Process card image using Gemini AI
     /// - Parameter imageData: The card image data (JPEG or PNG)
     /// - Returns: Complete card analysis from Gemini including format, details, and design image
+    /// - Throws: ServerApiError if the request fails
+    /// - Note: This method throws errors including quota exceeded (429) errors. Calling code should handle
+    ///         these gracefully by catching and continuing with default values for manual entry.
     func analyzeCardWithGemini(imageData: Data) async throws -> GeminiCardAnalysisResponse {
         // Log the request being sent to Gemini
         print("📤 Sending card scan request to Gemini AI")
@@ -671,6 +929,9 @@ extension ServerApi {
     ///   - cardDetails: The card details to use for design generation (organization name, colors, etc.)
     ///   - imageData: Optional reference image to extract styling from
     /// - Returns: Design image data response containing the generated banner
+    /// - Throws: ServerApiError if the request fails
+    /// - Note: This method throws errors including quota exceeded (429) errors. Calling code should handle
+    ///         these gracefully by catching and continuing without a banner image (using background color instead).
     func generateCardDesign(
         cardDetails: CardDesignRequest,
         imageData: Data? = nil
@@ -700,20 +961,20 @@ extension ServerApi {
         print("⏳ Waiting for Gemini AI to generate design...")
         
         do {
-            // Convert card details to JSON
-            let cardDetailsJSON = try encoder.encode(cardDetails)
-            guard let cardDetailsString = String(data: cardDetailsJSON, encoding: .utf8) else {
-                throw ServerApiError.decodingError(NSError(domain: "ServerApi", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to encode card details"]))
-            }
-            
-            // Build multipart fields
-            var fields = ["cardDetails": cardDetailsString]
-            
             let response: CardDesignResponse
             
             if let imageData = imageData {
-                // If we have an image, send it along with the card details
-                response = try await postMultipart(
+                // Convert card details to JSON for multipart fields
+                let cardDetailsJSON = try encoder.encode(cardDetails)
+                guard let cardDetailsString = String(data: cardDetailsJSON, encoding: .utf8) else {
+                    throw ServerApiError.decodingError(NSError(domain: "ServerApi", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to encode card details"]))
+                }
+                
+                // Build multipart fields
+                let fields = ["cardDetails": cardDetailsString]
+                
+                // Use the specialized multipart method that handles SVG responses
+                response = try await postMultipartCardDesign(
                     endpoint: "/api/gemini/cardDesignGenerating",
                     data: imageData,
                     fileName: "reference.jpg",
@@ -722,10 +983,8 @@ extension ServerApi {
                 )
             } else {
                 // If no image, just send card details as JSON
-                response = try await post(
-                    endpoint: "/api/gemini/cardDesignGenerating",
-                    body: cardDetails
-                )
+                // Use the specialized method that handles SVG responses
+                response = try await postCardDesignRequest(endpoint: "/api/gemini/cardDesignGenerating", body: cardDetails)
             }
             
             // Log the response received
@@ -733,7 +992,9 @@ extension ServerApi {
             print("✅ Gemini AI Design Generation Complete")
             print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
             print("📊 Response Summary:")
-            print("  • Design Image: \(response.designImage.prefix(50))...")
+            print("  • Design Image Length: \(response.designImage.count) characters")
+            print("  • First 50 chars: \(response.designImage.prefix(50))...")
+            print("  • Contains SVG: \(response.designImage.contains("<svg"))")
             print("  • Is Base64: \(response.designImage.hasPrefix("data:image"))")
             print("  • Is URL: \(response.designImage.hasPrefix("http"))")
             
@@ -1016,10 +1277,68 @@ struct CardDesignRequest: Encodable {
 /// Response from card design generation
 struct CardDesignResponse: Decodable {
     /// URL or base64-encoded image of the generated design
-    /// Format: Either "data:image/png;base64,..." or "https://..."
+    /// Format: Either "data:image/png;base64,..." or "https://..." or SVG string
     /// Expected size: 1125 x 432 pixels (@3x resolution) for Generic passes
     let designImage: String
     
     /// Optional message about the generation process
     let message: String?
+    
+    // Simple initializer for programmatic creation
+    init(designImage: String, message: String?) {
+        self.designImage = designImage
+        self.message = message
+    }
+    
+    // Custom coding keys to handle multiple field name variations
+    enum CodingKeys: String, CodingKey {
+        case designImage = "designImage"
+        case designSvg = "designSvg"  // Alternative field name
+        case message
+    }
+    
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        
+        // Try multiple field name variations
+        if let designImageValue = try? container.decode(String.self, forKey: .designImage) {
+            self.designImage = designImageValue
+        } else if let designSvgValue = try? container.decode(String.self, forKey: .designSvg) {
+            self.designImage = designSvgValue
+        } else {
+            // Fallback: try snake_case by using a dynamic key
+            let snakeCaseContainer = try decoder.container(keyedBy: DynamicCodingKey.self)
+            if let snakeCaseImage = try? snakeCaseContainer.decode(String.self, forKey: DynamicCodingKey(stringValue: "design_image")!) {
+                self.designImage = snakeCaseImage
+            } else if let snakeCaseSvg = try? snakeCaseContainer.decode(String.self, forKey: DynamicCodingKey(stringValue: "design_svg")!) {
+                self.designImage = snakeCaseSvg
+            } else {
+                throw DecodingError.keyNotFound(
+                    CodingKeys.designImage,
+                    DecodingError.Context(
+                        codingPath: decoder.codingPath,
+                        debugDescription: "Could not find designImage, designSvg, design_image, or design_svg in response"
+                    )
+                )
+            }
+        }
+        
+        self.message = try? container.decode(String.self, forKey: .message)
+    }
+}
+
+// Helper for dynamic coding keys
+private struct DynamicCodingKey: CodingKey {
+    var stringValue: String
+    var intValue: Int?
+    
+    init?(stringValue: String) {
+        self.stringValue = stringValue
+        self.intValue = nil
+    }
+    
+    init?(intValue: Int) {
+        self.stringValue = String(intValue)
+        self.intValue = intValue
+    }
 }
