@@ -46,6 +46,7 @@ struct EditCardView: View {
     @State private var showIconPicker = false
     @State private var selectedIconName: String? = "creditcard.fill"
     @State private var selectedIconColor: Color = .white
+    @State private var selectedPassStyle: PassStyle = .generic
     
     init(card: Card, onSave: (() -> Void)? = nil) {
         self.card = card
@@ -112,7 +113,8 @@ struct EditCardView: View {
     private var scrollContent: some View {
         ScrollView {
             VStack(spacing: 24) {
-                PassPreviewSection(
+                // Swipeable Pass Preview Section
+                SwipeablePassPreviewSection(
                     card: card,
                     cardName: cardName,
                     companyName: companyName,
@@ -127,7 +129,9 @@ struct EditCardView: View {
                     primaryColor: primaryColor,
                     secondaryColor: secondaryColor,
                     selectedIconName: selectedIconName ?? "creditcard.fill",
-                    selectedIconColor: selectedIconColor
+                    selectedIconColor: selectedIconColor,
+                    selectedPassStyle: $selectedPassStyle,
+                    onStyleChanged: handlePassStyleChange
                 )
                 
                 LogoIconSection(
@@ -143,6 +147,7 @@ struct EditCardView: View {
                     primaryColor: $primaryColor,
                     secondaryColor: $secondaryColor,
                     stripImageValidation: stripImageValidation,
+                    passStyle: selectedPassStyle,
                     onSelectImage: { showImagePicker = true },
                     onRemoveImage: {
                         selectedBackgroundImage = nil
@@ -158,7 +163,8 @@ struct EditCardView: View {
                     expirationDate: $expirationDate,
                     auxiliaryField1: $auxiliaryField1,
                     auxiliaryField2: $auxiliaryField2,
-                    barcodeString: $barcodeString
+                    barcodeString: $barcodeString,
+                    passStyle: selectedPassStyle
                 )
                 
                 ActionButtonsSection(
@@ -228,6 +234,54 @@ struct EditCardView: View {
         // Load icon settings - use existing SF Symbol or default
         selectedIconName = card.logoSFSymbol ?? "creditcard.fill"
         selectedIconColor = card.logoColor
+        
+        // Load pass style
+        selectedPassStyle = card.passStyleType
+    }
+    
+    private func handlePassStyleChange(_ newStyle: PassStyle) {
+        // Validate and trim fields based on new style's limits
+        let limits = newStyle.fieldLimits
+        
+        // Trim header fields if exceeding limit
+        var headers = card.headerFields
+        if headers.count > limits.header {
+            headers = Array(headers.prefix(limits.header))
+            card.updateHeaderFields(headers)
+            if limits.header == 0 {
+                headerField = ""
+            }
+        }
+        
+        // Trim primary fields if exceeding limit  
+        var primary = card.primaryFields
+        if primary.count > limits.primary {
+            primary = Array(primary.prefix(limits.primary))
+            card.updatePrimaryFields(primary)
+            if limits.primary == 0 {
+                membershipNumber = ""
+            }
+        }
+        
+        // Trim auxiliary fields if exceeding limit
+        var auxiliary = card.auxiliaryFields
+        if auxiliary.count > limits.auxiliary {
+            auxiliary = Array(auxiliary.prefix(limits.auxiliary))
+            card.updateAuxiliaryFields(auxiliary)
+            // Reset auxiliary fields that exceed the limit
+            if limits.auxiliary < 2 {
+                auxiliaryField2 = ""
+            }
+            if limits.auxiliary < 1 {
+                auxiliaryField1 = ""
+            }
+        }
+        
+        // Handle image type changes
+        if newStyle.supportsBackgroundImage && !newStyle.supportsStripImage {
+            // Switching to event ticket - may need different image aspect ratio
+            // Keep the existing image for now, user can replace it
+        }
     }
     
     private func saveCard() {
@@ -444,20 +498,33 @@ struct EditCardView: View {
         card.barcodeMessage = barcodeString
         card.expirationDate = expirationDate.isEmpty ? nil : expirationDate
         
-        card.passTypeIdentifier = "pass.com.example.generic"
+        // Save the selected pass style
+        card.updatePassStyle(selectedPassStyle)
+        card.passTypeIdentifier = "pass.com.example.\(selectedPassStyle.rawValue)"
+        
+        // Apply field limits based on pass style
+        let limits = selectedPassStyle.fieldLimits
         
         var primary: [PassField] = []
-        if !membershipNumber.isEmpty { primary.append(PassField(key: "membershipNumber", label: "Member", value: membershipNumber)) }
-        card.updatePrimaryFields(primary)
+        if !membershipNumber.isEmpty && limits.primary > 0 {
+            primary.append(PassField(key: "membershipNumber", label: "Member", value: membershipNumber))
+        }
+        card.updatePrimaryFields(Array(primary.prefix(limits.primary)))
         
         var headers: [PassField] = []
-        if !headerField.isEmpty { headers.append(PassField(key: "header", label: "Info", value: headerField)) }
-        card.updateHeaderFields(headers)
+        if !headerField.isEmpty && limits.header > 0 {
+            headers.append(PassField(key: "header", label: "Info", value: headerField))
+        }
+        card.updateHeaderFields(Array(headers.prefix(limits.header)))
         
         var aux: [PassField] = []
-        if !auxiliaryField1.isEmpty { aux.append(PassField(key: "aux1", label: "Info", value: auxiliaryField1)) }
-        if !auxiliaryField2.isEmpty { aux.append(PassField(key: "aux2", label: "Info", value: auxiliaryField2)) }
-        card.updateAuxiliaryFields(aux)
+        if !auxiliaryField1.isEmpty && limits.auxiliary > 0 {
+            aux.append(PassField(key: "aux1", label: "Info", value: auxiliaryField1))
+        }
+        if !auxiliaryField2.isEmpty && limits.auxiliary > 1 {
+            aux.append(PassField(key: "aux2", label: "Info", value: auxiliaryField2))
+        }
+        card.updateAuxiliaryFields(Array(aux.prefix(limits.auxiliary)))
         
         let selectedPrimaryHex = primaryColor.toHex()
         var newColors = card.dominantColorsHex
@@ -493,6 +560,253 @@ struct EditCardView: View {
     
     private func handleWalletError(_ error: Error) {
         print("Failed to add to wallet: \(error)")
+    }
+}
+
+// MARK: - Swipeable Pass Preview Section
+
+struct SwipeablePassPreviewSection: View {
+    let card: Card
+    let cardName: String
+    let companyName: String
+    let membershipNumber: String
+    let expirationDate: String
+    let barcodeString: String
+    let headerField: String
+    let auxiliaryField1: String
+    let auxiliaryField2: String
+    let selectedBackgroundImage: UIImage?
+    let isBannerImageRemoved: Bool
+    let primaryColor: Color
+    let secondaryColor: Color
+    let selectedIconName: String
+    let selectedIconColor: Color
+    @Binding var selectedPassStyle: PassStyle
+    let onStyleChanged: (PassStyle) -> Void
+    
+    @State private var dragOffset: CGFloat = 0
+    @State private var currentIndex: Int = 0
+    
+    private var displayCompany: String {
+        companyName.isEmpty ? (card.organizationName.isEmpty ? "Company" : card.organizationName) : companyName
+    }
+    
+    private var displayCardName: String {
+        cardName.isEmpty ? (card.passDescription.isEmpty ? "Loyalty Card" : card.passDescription) : cardName
+    }
+    
+    private var displayMember: String {
+        let fallbackMember = card.primaryFields.first?.value
+        return membershipNumber.isEmpty ? (fallbackMember ?? "") : membershipNumber
+    }
+    
+    private var currentBarcodeString: String {
+        barcodeString.isEmpty ? card.barcodeMessage : barcodeString
+    }
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            // Title and instructions
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Apple Wallet Preview")
+                    .font(.title3)
+                    .fontWeight(.semibold)
+                
+                HStack(spacing: 6) {
+                    Image(systemName: "hand.draw")
+                        .font(.caption)
+                        .foregroundColor(.blue)
+                    Text("Swipe the pass to change type")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+            
+            // Swipeable pass preview
+            GeometryReader { geometry in
+                let passWidth: CGFloat = min(geometry.size.width, 375)
+                let passHeight: CGFloat = passWidth * 1.256
+                
+                ZStack {
+                    ForEach(Array(PassStyle.allCases.enumerated()), id: \.offset) { index, style in
+                        passPreview(for: style, passWidth: passWidth, passHeight: passHeight)
+                            .offset(x: CGFloat(index - currentIndex) * (passWidth + 20) + dragOffset)
+                            .scaleEffect(index == currentIndex ? 1.0 : 0.9)
+                            .opacity(index == currentIndex ? 1.0 : 0.4)
+                            .animation(.spring(response: 0.4, dampingFraction: 0.8), value: currentIndex)
+                            .animation(.spring(response: 0.4, dampingFraction: 0.8), value: dragOffset)
+                    }
+                }
+                .frame(width: geometry.size.width, height: passHeight)
+                .gesture(
+                    DragGesture()
+                        .onChanged { value in
+                            dragOffset = value.translation.width
+                        }
+                        .onEnded { value in
+                            let threshold: CGFloat = 50
+                            withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+                                if value.translation.width < -threshold && currentIndex < PassStyle.allCases.count - 1 {
+                                    currentIndex += 1
+                                } else if value.translation.width > threshold && currentIndex > 0 {
+                                    currentIndex -= 1
+                                }
+                                dragOffset = 0
+                                
+                                // Update selected style
+                                selectedPassStyle = PassStyle.allCases[currentIndex]
+                                onStyleChanged(selectedPassStyle)
+                            }
+                        }
+                )
+            }
+            .frame(height: 480)
+            
+            // Page indicator dots
+            HStack(spacing: 8) {
+                ForEach(Array(PassStyle.allCases.enumerated()), id: \.offset) { index, _ in
+                    Circle()
+                        .fill(index == currentIndex ? Color.blue : Color.gray.opacity(0.3))
+                        .frame(width: 8, height: 8)
+                        .animation(.spring(response: 0.3, dampingFraction: 0.7), value: currentIndex)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.top, 8)
+            
+            // Pass type info card
+            HStack(spacing: 12) {
+                Image(systemName: selectedPassStyle.icon)
+                    .font(.title2)
+                    .foregroundColor(.blue)
+                    .frame(width: 44, height: 44)
+                    .background(Color.blue.opacity(0.1))
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(selectedPassStyle.displayName)
+                        .font(.headline)
+                        .foregroundColor(.primary)
+                    
+                    Text(selectedPassStyle.description)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(12)
+            .background(Color(.systemGray6))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .animation(.easeInOut(duration: 0.2), value: selectedPassStyle)
+            
+            // Pass status
+            HStack(spacing: 8) {
+                Image(systemName: card.hasValidPass ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                    .foregroundColor(card.hasValidPass ? .green : .orange)
+                Text(card.hasValidPass ? "Pass ready for Wallet" : "Changes require pass regeneration")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            .padding(.horizontal, 4)
+        }
+        .onAppear {
+            // Set initial index based on current style
+            if let index = PassStyle.allCases.firstIndex(of: selectedPassStyle) {
+                currentIndex = index
+            }
+        }
+    }
+    
+    @ViewBuilder
+    private func passPreview(for style: PassStyle, passWidth: CGFloat, passHeight: CGFloat) -> some View {
+        Group {
+            switch style {
+            case .generic:
+                GenericPassPreview(
+                    passWidth: passWidth,
+                    passHeight: passHeight,
+                    displayCompany: displayCompany,
+                    displayCardName: displayCardName,
+                    displayMember: displayMember,
+                    currentBarcodeString: currentBarcodeString,
+                    headerField: headerField,
+                    expirationDate: expirationDate,
+                    auxiliaryField1: auxiliaryField1,
+                    auxiliaryField2: auxiliaryField2,
+                    selectedBackgroundImage: selectedBackgroundImage,
+                    isBannerImageRemoved: isBannerImageRemoved,
+                    card: card,
+                    primaryColor: primaryColor,
+                    secondaryColor: secondaryColor,
+                    selectedIconName: selectedIconName,
+                    selectedIconColor: selectedIconColor,
+                    barcodeFormat: card.barcodeFormat
+                )
+            case .storeCard:
+                StoreCardPassPreview(
+                    passWidth: passWidth,
+                    passHeight: passHeight,
+                    displayCompany: displayCompany,
+                    displayCardName: displayCardName,
+                    displayMember: displayMember,
+                    currentBarcodeString: currentBarcodeString,
+                    headerField: headerField,
+                    expirationDate: expirationDate,
+                    auxiliaryField1: auxiliaryField1,
+                    auxiliaryField2: auxiliaryField2,
+                    selectedBackgroundImage: selectedBackgroundImage,
+                    isBannerImageRemoved: isBannerImageRemoved,
+                    card: card,
+                    primaryColor: primaryColor,
+                    secondaryColor: secondaryColor,
+                    selectedIconName: selectedIconName,
+                    selectedIconColor: selectedIconColor,
+                    barcodeFormat: card.barcodeFormat
+                )
+            case .coupon:
+                CouponPassPreview(
+                    passWidth: passWidth,
+                    passHeight: passHeight,
+                    displayCompany: displayCompany,
+                    displayCardName: displayCardName,
+                    displayMember: displayMember,
+                    currentBarcodeString: currentBarcodeString,
+                    headerField: headerField,
+                    expirationDate: expirationDate,
+                    auxiliaryField1: auxiliaryField1,
+                    auxiliaryField2: auxiliaryField2,
+                    selectedBackgroundImage: selectedBackgroundImage,
+                    isBannerImageRemoved: isBannerImageRemoved,
+                    card: card,
+                    primaryColor: primaryColor,
+                    secondaryColor: secondaryColor,
+                    selectedIconName: selectedIconName,
+                    selectedIconColor: selectedIconColor,
+                    barcodeFormat: card.barcodeFormat
+                )
+            case .eventTicket:
+                EventTicketPassPreview(
+                    passWidth: passWidth,
+                    passHeight: passHeight,
+                    displayCompany: displayCompany,
+                    displayCardName: displayCardName,
+                    displayMember: displayMember,
+                    currentBarcodeString: currentBarcodeString,
+                    headerField: headerField,
+                    expirationDate: expirationDate,
+                    auxiliaryField1: auxiliaryField1,
+                    auxiliaryField2: auxiliaryField2,
+                    selectedBackgroundImage: selectedBackgroundImage,
+                    isBannerImageRemoved: isBannerImageRemoved,
+                    card: card,
+                    primaryColor: primaryColor,
+                    secondaryColor: secondaryColor,
+                    selectedIconName: selectedIconName,
+                    selectedIconColor: selectedIconColor,
+                    barcodeFormat: card.barcodeFormat
+                )
+            }
+        }
     }
 }
 
@@ -563,60 +877,321 @@ struct LogoIconSection: View {
     }
 }
 
-// MARK: - Pass Preview Section
+// MARK: - Pass Type Previews
 
-struct PassPreviewSection: View {
-    let card: Card
-    let cardName: String
-    let companyName: String
-    let membershipNumber: String
-    let expirationDate: String
-    let barcodeString: String
+struct GenericPassPreview: View {
+    let passWidth: CGFloat
+    let passHeight: CGFloat
+    let displayCompany: String
+    let displayCardName: String
+    let displayMember: String
+    let currentBarcodeString: String
     let headerField: String
+    let expirationDate: String
     let auxiliaryField1: String
     let auxiliaryField2: String
     let selectedBackgroundImage: UIImage?
     let isBannerImageRemoved: Bool
+    let card: Card
     let primaryColor: Color
     let secondaryColor: Color
     let selectedIconName: String
     let selectedIconColor: Color
-    
-    private var displayCompany: String {
-        companyName.isEmpty ? (card.organizationName.isEmpty ? "Company" : card.organizationName) : companyName
-    }
-    
-    private var displayCardName: String {
-        cardName.isEmpty ? (card.passDescription.isEmpty ? "Loyalty Card" : card.passDescription) : cardName
-    }
-    
-    private var displayMember: String {
-        let fallbackMember = card.primaryFields.first?.value
-        return membershipNumber.isEmpty ? (fallbackMember ?? "") : membershipNumber
-    }
-    
-    private var currentBarcodeString: String {
-        barcodeString.isEmpty ? card.barcodeMessage : barcodeString
-    }
+    let barcodeFormat: String
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Apple Wallet Preview")
-                .font(.title3)
-                .fontWeight(.semibold)
-            
-            GeometryReader { geometry in
-                let passWidth: CGFloat = min(geometry.size.width, 375)
-                let passHeight: CGFloat = passWidth * 1.256
+        VStack(spacing: 0) {
+            // Logo and Header Section (extends to fill more space since no strip image)
+            HStack(alignment: .top, spacing: 12) {
+                ZStack {
+                    Circle().fill(secondaryColor.opacity(0.3))
+                    Image(systemName: selectedIconName)
+                        .font(.system(size: 26))
+                        .foregroundColor(selectedIconColor)
+                }
+                .frame(width: 50, height: 50)
+                .padding(.leading, 20)
+                .padding(.top, 20)
                 
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(displayCompany)
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundColor(secondaryColor)
+                        .lineLimit(1)
+                    
+                    Text(displayCardName)
+                        .font(.system(size: 13))
+                        .foregroundColor(secondaryColor.opacity(0.9))
+                        .lineLimit(1)
+                }
+                .padding(.top, 24)
+                
+                Spacer()
+            }
+            .padding(.bottom, 24)
+            .frame(maxWidth: .infinity)
+            .background(primaryColor)
+            
+            // NO STRIP IMAGE FOR GENERIC - fields section takes more space
+            PassFieldsView(
+                headerField: headerField,
+                displayMember: displayMember,
+                expirationDate: expirationDate,
+                auxiliaryField1: auxiliaryField1,
+                auxiliaryField2: auxiliaryField2,
+                currentBarcodeString: currentBarcodeString,
+                secondaryColor: secondaryColor,
+                barcodeFormat: barcodeFormat,
+                primaryColor: primaryColor,
+                topPadding: 8 // Less padding since no strip
+            )
+        }
+        .frame(width: passWidth, height: passHeight)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .shadow(color: .black.opacity(0.15), radius: 20, x: 0, y: 8)
+        .overlay {
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Color(.separator).opacity(0.3), lineWidth: 0.5)
+        }
+    }
+}
+
+struct StoreCardPassPreview: View {
+    let passWidth: CGFloat
+    let passHeight: CGFloat
+    let displayCompany: String
+    let displayCardName: String
+    let displayMember: String
+    let currentBarcodeString: String
+    let headerField: String
+    let expirationDate: String
+    let auxiliaryField1: String
+    let auxiliaryField2: String
+    let selectedBackgroundImage: UIImage?
+    let isBannerImageRemoved: Bool
+    let card: Card
+    let primaryColor: Color
+    let secondaryColor: Color
+    let selectedIconName: String
+    let selectedIconColor: Color
+    let barcodeFormat: String
+    
+    var body: some View {
+        VStack(spacing: 0) {
+            // Logo and Header Section (smaller for store card)
+            HStack(alignment: .top, spacing: 12) {
+                ZStack {
+                    Circle().fill(secondaryColor.opacity(0.3))
+                    Image(systemName: selectedIconName)
+                        .font(.system(size: 22))
+                        .foregroundColor(selectedIconColor)
+                }
+                .frame(width: 44, height: 44)
+                .padding(.leading, 16)
+                .padding(.top, 16)
+                
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(displayCompany)
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundColor(secondaryColor)
+                        .lineLimit(1)
+                    
+                    Text(displayCardName)
+                        .font(.system(size: 12))
+                        .foregroundColor(secondaryColor.opacity(0.9))
+                        .lineLimit(1)
+                }
+                .padding(.top, 18)
+                
+                Spacer()
+            }
+            .padding(.bottom, 8)
+            .frame(maxWidth: .infinity)
+            .background(primaryColor)
+            
+            // Prominent Strip Image (larger for store cards)
+            StripImageView(
+                selectedBackgroundImage: selectedBackgroundImage,
+                isBannerImageRemoved: isBannerImageRemoved,
+                card: card,
+                primaryColor: primaryColor,
+                height: passHeight * 0.30
+            )
+            
+            // Fields Section
+            PassFieldsView(
+                headerField: headerField,
+                displayMember: displayMember,
+                expirationDate: expirationDate,
+                auxiliaryField1: auxiliaryField1,
+                auxiliaryField2: auxiliaryField2,
+                currentBarcodeString: currentBarcodeString,
+                secondaryColor: secondaryColor,
+                barcodeFormat: barcodeFormat,
+                primaryColor: primaryColor,
+                compact: true
+            )
+        }
+        .frame(width: passWidth, height: passHeight)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .shadow(color: .black.opacity(0.15), radius: 20, x: 0, y: 8)
+        .overlay {
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Color(.separator).opacity(0.3), lineWidth: 0.5)
+        }
+    }
+}
+
+struct CouponPassPreview: View {
+    let passWidth: CGFloat
+    let passHeight: CGFloat
+    let displayCompany: String
+    let displayCardName: String
+    let displayMember: String
+    let currentBarcodeString: String
+    let headerField: String
+    let expirationDate: String
+    let auxiliaryField1: String
+    let auxiliaryField2: String
+    let selectedBackgroundImage: UIImage?
+    let isBannerImageRemoved: Bool
+    let card: Card
+    let primaryColor: Color
+    let secondaryColor: Color
+    let selectedIconName: String
+    let selectedIconColor: Color
+    let barcodeFormat: String
+    
+    var body: some View {
+        VStack(spacing: 0) {
+            // Logo and Header Section
+            HStack(alignment: .top, spacing: 12) {
+                ZStack {
+                    Circle().fill(secondaryColor.opacity(0.3))
+                    Image(systemName: selectedIconName)
+                        .font(.system(size: 26))
+                        .foregroundColor(selectedIconColor)
+                }
+                .frame(width: 50, height: 50)
+                .padding(.leading, 20)
+                .padding(.top, 20)
+                
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(displayCompany)
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundColor(secondaryColor)
+                        .lineLimit(1)
+                    
+                    Text(displayCardName)
+                        .font(.system(size: 13))
+                        .foregroundColor(secondaryColor.opacity(0.9))
+                        .lineLimit(1)
+                }
+                .padding(.top, 24)
+                
+                Spacer()
+            }
+            .padding(.bottom, 12)
+            .frame(maxWidth: .infinity)
+            .background(primaryColor)
+            
+            // Strip Image
+            StripImageView(
+                selectedBackgroundImage: selectedBackgroundImage,
+                isBannerImageRemoved: isBannerImageRemoved,
+                card: card,
+                primaryColor: primaryColor,
+                height: passHeight * 0.20
+            )
+            
+            // Perforated edge indicator
+            HStack(spacing: 4) {
+                ForEach(0..<30, id: \.self) { _ in
+                    Circle()
+                        .fill(Color(.systemBackground))
+                        .frame(width: 3, height: 3)
+                }
+            }
+            .frame(height: 6)
+            .frame(maxWidth: .infinity)
+            .background(primaryColor)
+            
+            // Fields Section
+            PassFieldsView(
+                headerField: headerField,
+                displayMember: displayMember,
+                expirationDate: expirationDate,
+                auxiliaryField1: auxiliaryField1,
+                auxiliaryField2: auxiliaryField2,
+                currentBarcodeString: currentBarcodeString,
+                secondaryColor: secondaryColor,
+                barcodeFormat: barcodeFormat,
+                primaryColor: primaryColor
+            )
+        }
+        .frame(width: passWidth, height: passHeight)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .shadow(color: .black.opacity(0.15), radius: 20, x: 0, y: 8)
+        .overlay {
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Color(.separator).opacity(0.3), lineWidth: 0.5)
+        }
+    }
+}
+
+struct EventTicketPassPreview: View {
+    let passWidth: CGFloat
+    let passHeight: CGFloat
+    let displayCompany: String
+    let displayCardName: String
+    let displayMember: String
+    let currentBarcodeString: String
+    let headerField: String
+    let expirationDate: String
+    let auxiliaryField1: String
+    let auxiliaryField2: String
+    let selectedBackgroundImage: UIImage?
+    let isBannerImageRemoved: Bool
+    let card: Card
+    let primaryColor: Color
+    let secondaryColor: Color
+    let selectedIconName: String
+    let selectedIconColor: Color
+    let barcodeFormat: String
+    
+    var body: some View {
+        ZStack {
+            // Full background image or gradient
+            Group {
+                if let backgroundImage = selectedBackgroundImage {
+                    Image(uiImage: backgroundImage)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                } else if !isBannerImageRemoved, let backgroundImage = card.bannerImage {
+                    Image(uiImage: backgroundImage)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                } else {
+                    LinearGradient(
+                        colors: [primaryColor, primaryColor.opacity(0.6)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                }
+            }
+            .frame(width: passWidth, height: passHeight)
+            .clipped()
+            
+            // Overlay content
+            VStack(spacing: 0) {
+                // Logo and Header Section with dark overlay
                 VStack(spacing: 0) {
                     HStack(alignment: .top, spacing: 12) {
-                        // Always display SF Symbol icon
                         ZStack {
-                            Circle().fill(secondaryColor.opacity(0.3))
+                            Circle().fill(Color.black.opacity(0.5))
                             Image(systemName: selectedIconName)
                                 .font(.system(size: 26))
-                                .foregroundColor(selectedIconColor)
+                                .foregroundColor(.white)
                         }
                         .frame(width: 50, height: 50)
                         .padding(.leading, 20)
@@ -624,197 +1199,311 @@ struct PassPreviewSection: View {
                         
                         VStack(alignment: .leading, spacing: 2) {
                             Text(displayCompany)
-                                .font(.system(size: 17, weight: .semibold))
-                                .foregroundColor(secondaryColor)
+                                .font(.system(size: 17, weight: .bold))
+                                .foregroundColor(.white)
                                 .lineLimit(1)
-                                .environment(\.layoutDirection, displayCompany.isRightToLeft ? .rightToLeft : .leftToRight)
+                                .shadow(color: .black.opacity(0.3), radius: 2)
                             
                             Text(displayCardName)
-                                .font(.system(size: 13))
-                                .foregroundColor(secondaryColor.opacity(0.9))
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundColor(.white.opacity(0.95))
                                 .lineLimit(1)
-                                .environment(\.layoutDirection, displayCardName.isRightToLeft ? .rightToLeft : .leftToRight)
+                                .shadow(color: .black.opacity(0.3), radius: 2)
                         }
                         .padding(.top, 24)
                         
                         Spacer()
                     }
                     .padding(.bottom, 12)
-                    .frame(maxWidth: .infinity)
-                    .background(primaryColor)
-                    
-                    // Strip/Banner image section
-                    // For Generic passes, this displays at approximately 20% of pass height
-                    // Aspect ratio: 1125:432 (approximately 2.6:1)
-                    Group {
-                        if let stripImage = selectedBackgroundImage {
-                            Image(uiImage: stripImage)
-                                .resizable()
-                                .aspectRatio(contentMode: .fill)
-                        } else if !isBannerImageRemoved, let stripImage = card.bannerImage {
-                            Image(uiImage: stripImage)
-                                .resizable()
-                                .aspectRatio(contentMode: .fill)
-                        } else {
-                            // Fallback to gradient when no banner image is available
-                            Rectangle()
-                                .fill(
-                                    LinearGradient(
-                                        colors: [primaryColor, primaryColor.opacity(0.8)],
-                                        startPoint: .topLeading,
-                                        endPoint: .bottomTrailing
-                                    )
-                                )
+                }
+                .background(
+                    LinearGradient(
+                        colors: [Color.black.opacity(0.4), Color.clear],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+                
+                Spacer()
+                
+                // Fields at bottom with dark overlay
+                VStack(alignment: .leading, spacing: 12) {
+                    if !headerField.isEmpty {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("INFO")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundColor(.white.opacity(0.8))
+                                .tracking(0.5)
+                            Text(headerField)
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundColor(.white)
+                                .shadow(color: .black.opacity(0.3), radius: 2)
                         }
                     }
-                    .frame(height: passHeight * 0.20)
-                    .frame(maxWidth: .infinity)
-                    .clipped()
                     
-                    VStack(alignment: .leading, spacing: 0) {
-                        if !headerField.isEmpty {
+                    if !displayMember.isEmpty {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("TICKET")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundColor(.white.opacity(0.8))
+                                .tracking(0.5)
+                            
+                            Text(displayMember)
+                                .font(.system(size: 24, weight: .bold))
+                                .foregroundColor(.white)
+                                .shadow(color: .black.opacity(0.3), radius: 2)
+                        }
+                    }
+                    
+                    HStack(spacing: 24) {
+                        if !expirationDate.isEmpty {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("DATE")
+                                    .font(.system(size: 11, weight: .medium))
+                                    .foregroundColor(.white.opacity(0.8))
+                                    .tracking(0.5)
+                                Text(expirationDate)
+                                    .font(.system(size: 15, weight: .semibold))
+                                    .foregroundColor(.white)
+                                    .shadow(color: .black.opacity(0.3), radius: 2)
+                            }
+                        }
+                        
+                        if !auxiliaryField1.isEmpty {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text("INFO")
-                                    .font(.system(size: 11))
-                                    .fontWeight(.medium)
-                                    .foregroundColor(secondaryColor.opacity(0.7))
+                                    .font(.system(size: 11, weight: .medium))
+                                    .foregroundColor(.white.opacity(0.8))
                                     .tracking(0.5)
-                                Text(headerField)
-                                    .font(.system(size: 15, weight: .regular))
-                                    .foregroundColor(secondaryColor)
-                                    .environment(\.layoutDirection, headerField.isRightToLeft ? .rightToLeft : .leftToRight)
+                                Text(auxiliaryField1)
+                                    .font(.system(size: 15, weight: .semibold))
+                                    .foregroundColor(.white)
+                                    .lineLimit(1)
+                                    .shadow(color: .black.opacity(0.3), radius: 2)
                             }
-                            .padding(.horizontal, 20)
-                            .padding(.top, 16)
-                            .padding(.bottom, 8)
                         }
-                        
-                        let fallbackMember = card.primaryFields.first?.value
-                        if !membershipNumber.isEmpty || fallbackMember != nil {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text("MEMBER")
-                                    .font(.system(size: 11))
-                                    .fontWeight(.medium)
-                                    .foregroundColor(secondaryColor.opacity(0.7))
-                                    .tracking(0.5)
-                                
-                                Text(displayMember)
-                                    .font(.system(size: 28, weight: .regular))
-                                    .foregroundColor(secondaryColor)
-                                    .environment(\.layoutDirection, displayMember.isRightToLeft ? .rightToLeft : .leftToRight)
-                            }
-                            .padding(.horizontal, 20)
-                            .padding(.top, headerField.isEmpty ? 20 : 8)
-                            .padding(.bottom, 12)
-                        }
-                        
-                        HStack(spacing: 40) {
-                            if !expirationDate.isEmpty || card.expirationDate != nil {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text("EXPIRES")
-                                        .font(.system(size: 11))
-                                        .fontWeight(.medium)
-                                        .foregroundColor(secondaryColor.opacity(0.7))
-                                        .tracking(0.5)
-                                    Text(expirationDate.isEmpty ? (card.expirationDate ?? "") : expirationDate)
-                                        .font(.system(size: 17, weight: .regular))
-                                        .foregroundColor(secondaryColor)
-                                }
-                            }
-                            Spacer()
-                        }
-                        .padding(.horizontal, 20)
-                        .padding(.bottom, 12)
-                        
-                        HStack(spacing: 40) {
-                            if !auxiliaryField1.isEmpty {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text("INFO")
-                                        .font(.system(size: 11))
-                                        .fontWeight(.medium)
-                                        .foregroundColor(secondaryColor.opacity(0.7))
-                                        .tracking(0.5)
-                                    Text(auxiliaryField1)
-                                        .font(.system(size: 15, weight: .regular))
-                                        .foregroundColor(secondaryColor)
-                                        .lineLimit(1)
-                                        .environment(\.layoutDirection, auxiliaryField1.isRightToLeft ? .rightToLeft : .leftToRight)
-                                }
-                            }
-                            if !auxiliaryField2.isEmpty {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text("INFO")
-                                        .font(.system(size: 11))
-                                        .fontWeight(.medium)
-                                        .foregroundColor(secondaryColor.opacity(0.7))
-                                        .tracking(0.5)
-                                    Text(auxiliaryField2)
-                                        .font(.system(size: 15, weight: .regular))
-                                        .foregroundColor(secondaryColor)
-                                        .lineLimit(1)
-                                        .environment(\.layoutDirection, auxiliaryField2.isRightToLeft ? .rightToLeft : .leftToRight)
-                                }
-                            }
-                            Spacer()
-                        }
-                        .padding(.horizontal, 20)
-                        .padding(.bottom, 16)
                         
                         Spacer()
-                        
-                        if !currentBarcodeString.isEmpty {
-                            VStack(spacing: 8) {
-                                ZStack {
-                                    RoundedRectangle(cornerRadius: 8).fill(.white)
-                                    if card.barcodeFormat.lowercased().contains("qr") {
-                                        Image(systemName: "qrcode")
-                                            .font(.system(size: 60))
-                                            .foregroundColor(.black)
-                                    } else {
-                                        HStack(spacing: 2) {
-                                            ForEach(0..<20, id: \.self) { _ in
-                                                Rectangle()
-                                                    .fill(.black)
-                                                    .frame(width: CGFloat.random(in: 1...4))
-                                            }
+                    }
+                    
+                    if !currentBarcodeString.isEmpty {
+                        VStack(spacing: 8) {
+                            ZStack {
+                                RoundedRectangle(cornerRadius: 8).fill(.white)
+                                if barcodeFormat.lowercased().contains("qr") {
+                                    Image(systemName: "qrcode")
+                                        .font(.system(size: 50))
+                                        .foregroundColor(.black)
+                                } else {
+                                    HStack(spacing: 2) {
+                                        ForEach(0..<15, id: \.self) { _ in
+                                            Rectangle()
+                                                .fill(.black)
+                                                .frame(width: CGFloat.random(in: 1...4))
                                         }
-                                        .frame(height: 60)
                                     }
+                                    .frame(height: 50)
                                 }
-                                .frame(height: 80)
-                                .padding(.horizontal, 20)
-                                
-                                Text(currentBarcodeString)
-                                    .font(.system(size: 13, weight: .regular))
-                                    .foregroundColor(secondaryColor)
-                                    .tracking(1)
                             }
-                            .padding(.bottom, 20)
+                            .frame(height: 70)
+                            
+                            Text(currentBarcodeString)
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundColor(.white)
+                                .tracking(1)
+                                .shadow(color: .black.opacity(0.3), radius: 2)
                         }
                     }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(primaryColor)
                 }
-                .frame(width: passWidth, height: passHeight)
-                .clipShape(RoundedRectangle(cornerRadius: 12))
-                .shadow(color: .black.opacity(0.15), radius: 20, x: 0, y: 8)
-                .overlay {
-                    RoundedRectangle(cornerRadius: 12)
-                        .stroke(Color(.separator).opacity(0.3), lineWidth: 0.5)
-                }
-                .frame(maxWidth: .infinity)
+                .padding(20)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    LinearGradient(
+                        colors: [Color.clear, Color.black.opacity(0.6)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
             }
-            .frame(height: 450)
-            
-            HStack(spacing: 8) {
-                Image(systemName: card.hasValidPass ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
-                    .foregroundColor(card.hasValidPass ? .green : .orange)
-                Text(card.hasValidPass ? "Pass ready for Wallet" : "Changes require pass regeneration")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
-            .padding(.horizontal, 4)
         }
+        .frame(width: passWidth, height: passHeight)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .shadow(color: .black.opacity(0.15), radius: 20, x: 0, y: 8)
+        .overlay {
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Color(.separator).opacity(0.3), lineWidth: 0.5)
+        }
+    }
+}
+
+// MARK: - Shared Pass Components
+
+struct StripImageView: View {
+    let selectedBackgroundImage: UIImage?
+    let isBannerImageRemoved: Bool
+    let card: Card
+    let primaryColor: Color
+    let height: CGFloat
+    
+    var body: some View {
+        Group {
+            if let stripImage = selectedBackgroundImage {
+                Image(uiImage: stripImage)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+            } else if !isBannerImageRemoved, let stripImage = card.bannerImage {
+                Image(uiImage: stripImage)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+            } else {
+                Rectangle()
+                    .fill(
+                        LinearGradient(
+                            colors: [primaryColor, primaryColor.opacity(0.8)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+            }
+        }
+        .frame(height: height)
+        .frame(maxWidth: .infinity)
+        .clipped()
+    }
+}
+
+struct PassFieldsView: View {
+    let headerField: String
+    let displayMember: String
+    let expirationDate: String
+    let auxiliaryField1: String
+    let auxiliaryField2: String
+    let currentBarcodeString: String
+    let secondaryColor: Color
+    let barcodeFormat: String
+    let primaryColor: Color
+    var compact: Bool = false
+    var topPadding: CGFloat = 16
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if !headerField.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("INFO")
+                        .font(.system(size: 11))
+                        .fontWeight(.medium)
+                        .foregroundColor(secondaryColor.opacity(0.7))
+                        .tracking(0.5)
+                    Text(headerField)
+                        .font(.system(size: 15, weight: .regular))
+                        .foregroundColor(secondaryColor)
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, compact ? 12 : topPadding)
+                .padding(.bottom, 8)
+            }
+            
+            if !displayMember.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("MEMBER")
+                        .font(.system(size: 11))
+                        .fontWeight(.medium)
+                        .foregroundColor(secondaryColor.opacity(0.7))
+                        .tracking(0.5)
+                    
+                    Text(displayMember)
+                        .font(.system(size: compact ? 24 : 28, weight: .regular))
+                        .foregroundColor(secondaryColor)
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, headerField.isEmpty ? (compact ? 16 : topPadding) : 8)
+                .padding(.bottom, 12)
+            }
+            
+            HStack(spacing: 40) {
+                if !expirationDate.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("EXPIRES")
+                            .font(.system(size: 11))
+                            .fontWeight(.medium)
+                            .foregroundColor(secondaryColor.opacity(0.7))
+                            .tracking(0.5)
+                        Text(expirationDate)
+                            .font(.system(size: 17, weight: .regular))
+                            .foregroundColor(secondaryColor)
+                    }
+                }
+                Spacer()
+            }
+            .padding(.horizontal, 20)
+            .padding(.bottom, 12)
+            
+            HStack(spacing: 40) {
+                if !auxiliaryField1.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("INFO")
+                            .font(.system(size: 11))
+                            .fontWeight(.medium)
+                            .foregroundColor(secondaryColor.opacity(0.7))
+                            .tracking(0.5)
+                        Text(auxiliaryField1)
+                            .font(.system(size: 15, weight: .regular))
+                            .foregroundColor(secondaryColor)
+                            .lineLimit(1)
+                    }
+                }
+                if !auxiliaryField2.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("INFO")
+                            .font(.system(size: 11))
+                            .fontWeight(.medium)
+                            .foregroundColor(secondaryColor.opacity(0.7))
+                            .tracking(0.5)
+                        Text(auxiliaryField2)
+                            .font(.system(size: 15, weight: .regular))
+                            .foregroundColor(secondaryColor)
+                            .lineLimit(1)
+                    }
+                }
+                Spacer()
+            }
+            .padding(.horizontal, 20)
+            .padding(.bottom, 16)
+            
+            Spacer()
+            
+            if !currentBarcodeString.isEmpty {
+                VStack(spacing: 8) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 8).fill(.white)
+                        if barcodeFormat.lowercased().contains("qr") {
+                            Image(systemName: "qrcode")
+                                .font(.system(size: 60))
+                                .foregroundColor(.black)
+                        } else {
+                            HStack(spacing: 2) {
+                                ForEach(0..<20, id: \.self) { _ in
+                                    Rectangle()
+                                        .fill(.black)
+                                        .frame(width: CGFloat.random(in: 1...4))
+                                }
+                            }
+                            .frame(height: 60)
+                        }
+                    }
+                    .frame(height: 80)
+                    .padding(.horizontal, 20)
+                    
+                    Text(currentBarcodeString)
+                        .font(.system(size: 13, weight: .regular))
+                        .foregroundColor(secondaryColor)
+                        .tracking(1)
+                }
+                .padding(.bottom, 20)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(primaryColor)
     }
 }
 
@@ -827,6 +1516,7 @@ struct PassCustomizationSection: View {
     @Binding var primaryColor: Color
     @Binding var secondaryColor: Color
     let stripImageValidation: StripImageProcessor.ValidationResult?
+    let passStyle: PassStyle
     let onSelectImage: () -> Void
     let onRemoveImage: () -> Void
     
@@ -836,7 +1526,7 @@ struct PassCustomizationSection: View {
                 .font(.title3)
                 .fontWeight(.semibold)
             
-            Text("Customize the banner image and colors")
+            Text(passStyle.supportsImage ? "Customize the \(passStyle.supportsBackgroundImage ? "background" : "strip") image and colors" : "Customize colors (Generic passes use logo only)")
                 .font(.caption)
                 .foregroundColor(.secondary)
             
@@ -853,109 +1543,112 @@ struct PassCustomizationSection: View {
                 )
             }
             
-            HStack {
-                Rectangle().fill(Color(.separator)).frame(height: 1)
-                Text("AND")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                Rectangle().fill(Color(.separator)).frame(height: 1)
-            }
-            .padding(.vertical, 8)
-            
-            VStack(alignment: .leading, spacing: 12) {
+            // Only show image picker for types that support images
+            if passStyle.supportsImage {
                 HStack {
-                    Text("Banner Image (Top Strip)")
-                        .font(.subheadline)
-                        .fontWeight(.semibold)
+                    Rectangle().fill(Color(.separator)).frame(height: 1)
+                    Text("AND")
+                        .font(.caption)
                         .foregroundColor(.secondary)
-                    
-                    Spacer()
-                    
-                    // Updated dimensions for Apple PassKit Generic pass strip image
-                    // The correct size is 1125 x 432 pixels (@3x resolution)
-                    Text("1125×432")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(Color(.systemGray5))
-                        .clipShape(Capsule())
+                    Rectangle().fill(Color(.separator)).frame(height: 1)
                 }
+                .padding(.vertical, 8)
                 
-                VStack(spacing: 12) {
-                    let displayImage = selectedBackgroundImage ?? (isBannerImageRemoved ? nil : card.bannerImage)
-                    
-                    if let image = displayImage {
-                        ZStack(alignment: .topTrailing) {
-                            Image(uiImage: image)
-                                .resizable()
-                                .aspectRatio(contentMode: .fill)
-                                .frame(height: 100)
-                                .frame(maxWidth: .infinity)
-                                .clipShape(RoundedRectangle(cornerRadius: 12))
-                                .overlay {
-                                    RoundedRectangle(cornerRadius: 12)
-                                        .stroke(Color.blue.opacity(0.5), lineWidth: 2)
-                                }
-                            
-                            Button(action: onRemoveImage) {
-                                Image(systemName: "xmark.circle.fill")
-                                    .font(.title2)
-                                    .foregroundStyle(.white, Color.black.opacity(0.6))
-                                    .padding(8)
-                            }
-                        }
-                    } else {
-                        Button(action: onSelectImage) {
-                            RoundedRectangle(cornerRadius: 12)
-                                .fill(Color(.systemGray5))
-                                .frame(height: 100)
-                                .overlay {
-                                    VStack(spacing: 8) {
-                                        Image(systemName: "photo.badge.plus")
-                                            .font(.system(size: 28))
-                                            .foregroundColor(.blue)
-                                        Text("Tap to add banner image")
-                                            .font(.caption2)
-                                            .foregroundColor(.secondary)
-                                        // Updated recommended dimensions for strip image
-                                        Text("Recommended: 1125×432 pixels")
-                                            .font(.caption2)
-                                            .foregroundColor(.secondary.opacity(0.7))
-                                    }
-                                }
-                        }
-                        .buttonStyle(PlainButtonStyle())
-                    }
-                    
-                    Button(action: onSelectImage) {
-                        HStack {
-                            Image(systemName: "photo").foregroundColor(.blue)
-                            Text(displayImage == nil ? "Add Banner Image" : "Change Banner Image")
-                                .font(.subheadline)
-                                .fontWeight(.medium)
-                                .foregroundColor(.blue)
-                        }
-                        .padding(.vertical, 6)
-                    }
-                }
-                
-                if let validation = stripImageValidation {
-                    HStack(spacing: 8) {
-                        Image(systemName: validation.icon)
-                            .foregroundColor(validation.color)
-                        Text(validation.message)
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        Text("\(passStyle.imageTypeName) Image")
+                            .font(.subheadline)
+                            .fontWeight(.semibold)
+                            .foregroundColor(.secondary)
+                        
+                        Spacer()
+                        
+                        // Image dimensions badge
+                        Text(passStyle.imageDimensions)
                             .font(.caption2)
-                            .foregroundColor(validation.color)
+                            .foregroundColor(.secondary)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(Color(.systemGray5))
+                            .clipShape(Capsule())
                     }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(validation.color.opacity(0.1))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    
+                    VStack(spacing: 12) {
+                        let displayImage = selectedBackgroundImage ?? (isBannerImageRemoved ? nil : card.bannerImage)
+                        
+                        if let image = displayImage {
+                            ZStack(alignment: .topTrailing) {
+                                Image(uiImage: image)
+                                    .resizable()
+                                    .aspectRatio(contentMode: .fill)
+                                    .frame(height: passStyle.supportsBackgroundImage ? 160 : 100)
+                                    .frame(maxWidth: .infinity)
+                                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                                    .overlay {
+                                        RoundedRectangle(cornerRadius: 12)
+                                            .stroke(Color.blue.opacity(0.5), lineWidth: 2)
+                                    }
+                                
+                                Button(action: onRemoveImage) {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .font(.title2)
+                                        .foregroundStyle(.white, Color.black.opacity(0.6))
+                                        .padding(8)
+                                }
+                            }
+                        } else {
+                            Button(action: onSelectImage) {
+                                RoundedRectangle(cornerRadius: 12)
+                                    .fill(Color(.systemGray5))
+                                    .frame(height: passStyle.supportsBackgroundImage ? 160 : 100)
+                                    .overlay {
+                                        VStack(spacing: 8) {
+                                            Image(systemName: passStyle.supportsBackgroundImage ? "photo.fill" : "photo.badge.plus")
+                                                .font(.system(size: 28))
+                                                .foregroundColor(.blue)
+                                            Text("Tap to add \(passStyle.imageTypeName) image")
+                                                .font(.caption2)
+                                                .foregroundColor(.secondary)
+                                                .multilineTextAlignment(.center)
+                                            Text("Required: \(passStyle.imageDimensions) pixels")
+                                                .font(.caption2)
+                                                .foregroundColor(.secondary.opacity(0.7))
+                                        }
+                                        .padding(.horizontal)
+                                    }
+                            }
+                            .buttonStyle(PlainButtonStyle())
+                        }
+                        
+                        Button(action: onSelectImage) {
+                            HStack {
+                                Image(systemName: "photo").foregroundColor(.blue)
+                                Text(displayImage == nil ? "Add \(passStyle.imageTypeName)" : "Change \(passStyle.imageTypeName)")
+                                    .font(.subheadline)
+                                    .fontWeight(.medium)
+                                    .foregroundColor(.blue)
+                            }
+                            .padding(.vertical, 6)
+                        }
+                    }
+                    
+                    if let validation = stripImageValidation {
+                        HStack(spacing: 8) {
+                            Image(systemName: validation.icon)
+                                .foregroundColor(validation.color)
+                            Text(validation.message)
+                                .font(.caption2)
+                                .foregroundColor(validation.color)
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(validation.color.opacity(0.1))
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                    }
                 }
             }
             
-            Text("Note: The banner image appears in the strip area at the top of the pass. The primary color is used for the pass background, and the secondary color is used for the text.")
+            Text(passStyle.visualNote)
                 .font(.caption2)
                 .foregroundColor(.secondary)
                 .italic()
@@ -1064,8 +1757,11 @@ struct CardInformationSection: View {
     @Binding var auxiliaryField1: String
     @Binding var auxiliaryField2: String
     @Binding var barcodeString: String
+    let passStyle: PassStyle
     
     var body: some View {
+        let limits = passStyle.fieldLimits
+        
         VStack(alignment: .leading, spacing: 20) {
             Text("Card Information")
                 .font(.title3)
@@ -1078,17 +1774,53 @@ struct CardInformationSection: View {
                 }
                 
                 FieldGroup(title: "Front of Pass") {
-                    EditField(title: "Header Field", text: $headerField, placeholder: "Optional header text")
-                    EditField(title: "Membership Number", text: $membershipNumber, placeholder: "Member ID or account number")
+                    // Header fields - only show if supported
+                    if limits.header > 0 {
+                        EditField(
+                            title: "Header Field",
+                            text: $headerField,
+                            placeholder: limits.header == 1 ? "Single header field" : "Optional header text"
+                        )
+                    }
+                    
+                    // Primary fields - only show if supported
+                    if limits.primary > 0 {
+                        EditField(
+                            title: "Membership Number",
+                            text: $membershipNumber,
+                            placeholder: limits.primary == 1 ? "Primary field (required)" : "Member ID or account number"
+                        )
+                    }
+                    
+                    // Secondary fields (expiration) - show for all pass types
                     EditField(title: "Expiration Date", text: $expirationDate, placeholder: "MM/YY (optional)")
-                    EditField(title: "Auxiliary Info 1", text: $auxiliaryField1, placeholder: "Additional info (optional)")
-                    EditField(title: "Auxiliary Info 2", text: $auxiliaryField2, placeholder: "Additional info (optional)")
+                    
+                    // Auxiliary fields - only show based on limit
+                    if limits.auxiliary > 0 {
+                        EditField(
+                            title: "Auxiliary Info 1",
+                            text: $auxiliaryField1,
+                            placeholder: "Additional info (optional)"
+                        )
+                    }
+                    
+                    if limits.auxiliary > 1 {
+                        EditField(
+                            title: "Auxiliary Info 2",
+                            text: $auxiliaryField2,
+                            placeholder: "Additional info (optional)"
+                        )
+                    }
+                    
+                    if limits.auxiliary > 2 {
+                        // Future: Add more auxiliary fields if needed
+                        // For now, we only track 2 auxiliary fields in the view state
+                    }
                 }
                 
                 FieldGroup(title: "Barcode/QR Code") {
                     EditField(title: "Barcode Data", text: $barcodeString, placeholder: "Barcode or QR code number")
                 }
-                
             }
         }
     }

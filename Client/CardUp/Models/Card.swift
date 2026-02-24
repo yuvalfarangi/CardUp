@@ -142,6 +142,11 @@ final class Card {
     /// Generated .pkpass file data ready for Apple Wallet
     var pkpassData: Data?
     
+    // MARK: - Pass Style
+    
+    /// The PassKit style for this card (generic, storeCard, coupon, eventTicket)
+    var passStyle: String
+    
     // MARK: - Status Flags
     
     /// Whether this card is still a draft (not yet finalized)
@@ -180,6 +185,7 @@ final class Card {
         expirationDate: String? = nil,
         relevantDate: String? = nil,
         pkpassData: Data? = nil,
+        passStyle: String = PassStyle.generic.rawValue,
         isDraft: Bool = true,
         isAddedToWallet: Bool = false
     ) {
@@ -210,6 +216,7 @@ final class Card {
         self.expirationDate = expirationDate
         self.relevantDate = relevantDate
         self.pkpassData = pkpassData
+        self.passStyle = passStyle
         self.isDraft = isDraft
         self.isAddedToWallet = isAddedToWallet
     }
@@ -386,6 +393,167 @@ extension Card {
             self.headerFieldsJson = jsonString
         }
     }
+    
+    /// Get the PassStyle enum value for this card
+    var passStyleType: PassStyle {
+        return PassStyle(rawValue: passStyle) ?? .generic
+    }
+    
+    /// Update the pass style
+    func updatePassStyle(_ style: PassStyle) {
+        self.passStyle = style.rawValue
+    }
+}
+
+// MARK: - PassKit Style Types
+
+/// Apple PassKit pass styles with their specific layout constraints
+/// Based on official Apple PassKit documentation
+enum PassStyle: String, CaseIterable, Identifiable {
+    case generic = "generic"
+    case storeCard = "storeCard"
+    case coupon = "coupon"
+    case eventTicket = "eventTicket"
+    
+    var id: String { rawValue }
+    
+    var displayName: String {
+        switch self {
+        case .generic: return "Generic"
+        case .storeCard: return "Store Card"
+        case .coupon: return "Coupon"
+        case .eventTicket: return "Event Ticket"
+        }
+    }
+    
+    var icon: String {
+        switch self {
+        case .generic: return "creditcard.fill"
+        case .storeCard: return "storefront.fill"
+        case .coupon: return "tag.fill"
+        case .eventTicket: return "ticket.fill"
+        }
+    }
+    
+    var description: String {
+        switch self {
+        case .generic:
+            return "Standard loyalty cards and membership passes"
+        case .storeCard:
+            return "Retail store cards with strip image support"
+        case .coupon:
+            return "Discount coupons with perforated edge style"
+        case .eventTicket:
+            return "Event tickets with background image support"
+        }
+    }
+    
+    /// Maximum number of fields allowed for each field type per Apple PassKit guidelines
+    var fieldLimits: PassFieldLimits {
+        switch self {
+        case .generic:
+            return PassFieldLimits(
+                header: 3,
+                primary: 4,
+                secondary: 4,
+                auxiliary: 4
+            )
+        case .storeCard:
+            return PassFieldLimits(
+                header: 1,
+                primary: 1,
+                secondary: 4,
+                auxiliary: 4
+            )
+        case .coupon:
+            return PassFieldLimits(
+                header: 3,
+                primary: 1,
+                secondary: 4,
+                auxiliary: 4
+            )
+        case .eventTicket:
+            return PassFieldLimits(
+                header: 3,
+                primary: 1,
+                secondary: 4,
+                auxiliary: 4
+            )
+        }
+    }
+    
+    /// Whether this pass type supports strip images (strip.png at 1125x432 @3x)
+    /// According to Apple PassKit: Only storeCard and coupon use strip.png
+    var supportsStripImage: Bool {
+        switch self {
+        case .storeCard, .coupon:
+            return true
+        case .generic, .eventTicket:
+            return false
+        }
+    }
+    
+    /// Whether this pass type supports background images (background.png at 1125x2436 @3x)
+    /// According to Apple PassKit: Only eventTicket uses background.png
+    var supportsBackgroundImage: Bool {
+        switch self {
+        case .eventTicket:
+            return true
+        case .generic, .storeCard, .coupon:
+            return false
+        }
+    }
+    
+    /// Whether this pass type supports any image (strip or background)
+    var supportsImage: Bool {
+        return supportsStripImage || supportsBackgroundImage
+    }
+    
+    /// Image type name for this pass type
+    var imageTypeName: String {
+        switch self {
+        case .generic:
+            return "None (Logo only)"
+        case .storeCard, .coupon:
+            return "strip.png"
+        case .eventTicket:
+            return "background.png"
+        }
+    }
+    
+    /// Image dimensions for this pass type at @3x resolution
+    var imageDimensions: String {
+        switch self {
+        case .generic:
+            return "N/A"
+        case .storeCard, .coupon:
+            return "1125×432" // strip.png @3x
+        case .eventTicket:
+            return "1125×2436" // background.png @3x (iPhone aspect ratio)
+        }
+    }
+    
+    /// Visual style note for UI
+    var visualNote: String {
+        switch self {
+        case .generic:
+            return "Logo and fields only (no strip/background)"
+        case .storeCard:
+            return "Prominent strip.png for store branding"
+        case .coupon:
+            return "strip.png with perforated edge effect"
+        case .eventTicket:
+            return "Full background.png with overlaid fields"
+        }
+    }
+}
+
+/// Field limits for a specific PassKit style
+struct PassFieldLimits {
+    let header: Int
+    let primary: Int
+    let secondary: Int
+    let auxiliary: Int
 }
 
 // MARK: - Supporting Types

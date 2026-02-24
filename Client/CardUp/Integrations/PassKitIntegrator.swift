@@ -27,10 +27,10 @@ final class PassKitIntegrator {
         isGenerating = true
         defer { isGenerating = false }
         
-        // Create pass payload (using legacy structure)
+        // Create pass payload using the card's passStyle
         let payload = PassPayload(
             cardId: card.id.uuidString,
-            passType: "generic", // Default to generic
+            passType: card.passStyle, // Use the actual pass style from the card
             organizationName: extractedData.companyName ?? (card.organizationName.isEmpty ? "Unknown Company" : card.organizationName),
             description: extractedData.cardName ?? (card.passDescription.isEmpty ? "Loyalty Card" : card.passDescription),
             logoText: extractedData.companyName ?? card.organizationName,
@@ -258,9 +258,35 @@ final class PassKitIntegrator {
             "messageEncoding": "iso-8859-1"
         ]
         
-        let mockPassDict: [String: Any] = [
+        // Use the appropriate key for the pass style (generic, storeCard, coupon, eventTicket)
+        let passStyleKey = payload.passType
+        let passStyleDict: [String: Any] = [
+            "headerFields": [],
+            "primaryFields": primaryFields,
+            "secondaryFields": secondaryFields,
+            "auxiliaryFields": auxiliaryFields,
+            "backFields": [
+                [
+                    "key": "company",
+                    "label": "Company",
+                    "value": payload.organizationName
+                ],
+                [
+                    "key": "cardType",
+                    "label": "Card Type",
+                    "value": payload.description
+                ],
+                [
+                    "key": "passStyle",
+                    "label": "Pass Style",
+                    "value": passStyleKey
+                ]
+            ]
+        ]
+        
+        var mockPassDict: [String: Any] = [
             "formatVersion": 1,
-            "passTypeIdentifier": "pass.com.yourcompany.cardUp.\(payload.passType)",
+            "passTypeIdentifier": "pass.com.yourcompany.cardUp.\(passStyleKey)",
             "serialNumber": payload.cardId,
             "teamIdentifier": "YOUR_TEAM_ID",
             "organizationName": payload.organizationName,
@@ -270,26 +296,10 @@ final class PassKitIntegrator {
             "backgroundColor": payload.dominantColors.first ?? "rgb(59, 130, 246)",
             "labelColor": "rgb(255, 255, 255)",
             "barcode": barcodeDict,
-            "generic": [
-                "headerFields": [],
-                "primaryFields": primaryFields,
-                "secondaryFields": secondaryFields,
-                "auxiliaryFields": auxiliaryFields,
-                "backFields": [
-                    [
-                        "key": "company",
-                        "label": "Company",
-                        "value": payload.organizationName
-                    ],
-                    [
-                        "key": "cardType",
-                        "label": "Card Type",
-                        "value": payload.description
-                    ]
-                ]
-            ] as [String : Any],
+            passStyleKey: passStyleDict,
             "_mock": true,
-            "_note": "This is mock data. Configure CloudFlare Worker for real .pkpass generation"
+            "_note": "This is mock data. Configure CloudFlare Worker for real .pkpass generation",
+            "_passStyle": passStyleKey
         ]
         
         // Convert to JSON data
@@ -323,7 +333,10 @@ final class PassKitIntegrator {
             "messageEncoding": payload.barcodeMessageEncoding
         ]
         
-        // Build generic section
+        // Build generic section - use the appropriate key based on pass style
+        // Extract pass style from passTypeIdentifier (e.g., "pass.com.example.storeCard" -> "storeCard")
+        let passStyleKey = payload.passTypeIdentifier.components(separatedBy: ".").last ?? "generic"
+        
         var genericDict: [String: Any] = [:]
         if !headerFieldsDicts.isEmpty {
             genericDict["headerFields"] = headerFieldsDicts
@@ -341,7 +354,7 @@ final class PassKitIntegrator {
             genericDict["backFields"] = backFieldsDicts
         }
         
-        // Build complete pass dictionary
+        // Build complete pass dictionary with the appropriate style key
         var mockPassDict: [String: Any] = [
             "formatVersion": payload.formatVersion,
             "passTypeIdentifier": payload.passTypeIdentifier,
@@ -352,9 +365,10 @@ final class PassKitIntegrator {
             "foregroundColor": payload.foregroundColor,
             "backgroundColor": payload.backgroundColor,
             "barcode": barcodeDict,
-            "generic": genericDict,
+            passStyleKey: genericDict, // Use the extracted style key (generic, storeCard, coupon, eventTicket)
             "_mock": true,
-            "_note": "This is mock data. Configure CloudFlare Worker for real .pkpass generation"
+            "_note": "This is mock data. Configure CloudFlare Worker for real .pkpass generation",
+            "_passStyle": passStyleKey
         ]
         
         // Add optional fields
