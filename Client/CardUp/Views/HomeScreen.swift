@@ -11,20 +11,20 @@ import SwiftData
 struct HomeScreen: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \Card.creationDate, order: .reverse) private var allCards: [Card]
-    
+
     @State private var searchText = ""
     @State private var showAddCard = false
     @State private var showProfile = false
-    
+
     // Computed properties for filtered cards
     private var walletCards: [Card] {
-        allCards.filter { !$0.isDraft }
+        allCards.filter { $0.isAddedToWallet }
     }
-    
-    private var draftCards: [Card] {
-        allCards.filter { $0.isDraft }
+
+    private var savedCards: [Card] {
+        allCards.filter { !$0.isAddedToWallet }
     }
-    
+
     // Search functionality
     private var filteredWalletCards: [Card] {
         if searchText.isEmpty {
@@ -36,45 +36,47 @@ struct HomeScreen: View {
             card.displayName.localizedCaseInsensitiveContains(searchText)
         }
     }
-    
-    private var filteredDraftCards: [Card] {
+
+    private var filteredSavedCards: [Card] {
         if searchText.isEmpty {
-            return draftCards
+            return savedCards
         }
-        return draftCards.filter { card in
+        return savedCards.filter { card in
             card.passDescription.localizedCaseInsensitiveContains(searchText) ||
             card.organizationName.localizedCaseInsensitiveContains(searchText) ||
             card.displayName.localizedCaseInsensitiveContains(searchText)
         }
     }
-    
+
     var body: some View {
         GeometryReader { geometry in
             ScrollView {
                 LazyVStack(spacing: 24) {
-                    // Added to Wallet Section
+                    // In Wallet Section — only cards confirmed added to Apple Wallet
                     if !filteredWalletCards.isEmpty {
                         CardSection(
-                            title: "Added to Wallet",
+                            title: "In Wallet",
                             cards: filteredWalletCards,
-                            isWalletSection: true
+                            isWalletSection: true,
+                            onDelete: deleteCard
                         )
                     }
-                    
-                    // Drafts Section
-                    if !filteredDraftCards.isEmpty {
+
+                    // Saved Section — cards not yet in wallet (drafts + processed)
+                    if !filteredSavedCards.isEmpty {
                         CardSection(
-                            title: "Drafts",
-                            cards: filteredDraftCards,
-                            isWalletSection: false
+                            title: "Saved",
+                            cards: filteredSavedCards,
+                            isWalletSection: false,
+                            onDelete: deleteCard
                         )
                     }
-                    
+
                     // Empty state
                     if allCards.isEmpty {
                         EmptyStateView()
                     }
-                    
+
                     // Bottom padding for the fixed bottom bar
                     Spacer()
                         .frame(height: 120)
@@ -102,6 +104,40 @@ struct HomeScreen: View {
         .sheet(isPresented: $showProfile) {
             Profile()
         }
+        .onAppear {
+            syncWalletStatus()
+        }
+    }
+
+    // MARK: - Actions
+
+    private func deleteCard(_ card: Card) {
+        // If the card is in Apple Wallet, remove it from there first
+        if card.isAddedToWallet {
+            PassKitIntegrator.removePassFromWallet(
+                serialNumber: card.serialNumber,
+                passTypeIdentifier: card.passTypeIdentifier
+            )
+        }
+        modelContext.delete(card)
+        try? modelContext.save()
+    }
+
+    /// Sync wallet status — cards may have been removed from Apple Wallet externally
+    private func syncWalletStatus() {
+        var didChange = false
+        for card in allCards where card.isAddedToWallet {
+            if !PassKitIntegrator.isPassInWallet(
+                serialNumber: card.serialNumber,
+                passTypeIdentifier: card.passTypeIdentifier
+            ) {
+                card.isAddedToWallet = false
+                didChange = true
+            }
+        }
+        if didChange {
+            try? modelContext.save()
+        }
     }
 }
 
@@ -110,7 +146,8 @@ struct CardSection: View {
     let title: String
     let cards: [Card]
     let isWalletSection: Bool
-    
+    let onDelete: (Card) -> Void
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
@@ -118,9 +155,9 @@ struct CardSection: View {
                     .font(.title2)
                     .fontWeight(.semibold)
                     .foregroundColor(.primary)
-                
+
                 Spacer()
-                
+
                 Text("\(cards.count)")
                     .font(.caption)
                     .fontWeight(.medium)
@@ -130,10 +167,12 @@ struct CardSection: View {
                     .background(.secondary.opacity(0.1))
                     .clipShape(Capsule())
             }
-            
+
             LazyVStack(spacing: 12) {
                 ForEach(cards) { card in
-                    CardRowView(card: card, isWalletSection: isWalletSection)
+                    SwipeToDeleteWrapper(onDelete: { onDelete(card) }) {
+                        CardRowView(card: card, isWalletSection: isWalletSection)
+                    }
                 }
             }
         }
@@ -335,6 +374,81 @@ struct CardButtonStyle: ButtonStyle {
             .scaleEffect(configuration.isPressed ? 0.98 : 1.0)
             .opacity(configuration.isPressed ? 0.9 : 1.0)
             .animation(.easeInOut(duration: 0.1), value: configuration.isPressed)
+    }
+}
+
+// MARK: - Swipe to Delete Wrapper
+
+struct SwipeToDeleteWrapper<Content: View>: View {
+    let onDelete: () -> Void
+    let content: Content
+
+    @State private var offset: CGFloat = 0
+    private let revealWidth: CGFloat = 80
+    private let threshold: CGFloat = 50
+
+    init(onDelete: @escaping () -> Void, @ViewBuilder content: () -> Content) {
+        self.onDelete = onDelete
+        self.content = content()
+    }
+
+    var body: some View {
+        ZStack(alignment: .trailing) {
+            // Delete button revealed behind the card
+            Button(action: performDelete) {
+                VStack(spacing: 4) {
+                    Image(systemName: "trash.fill")
+                        .font(.body)
+                    Text("Delete")
+                        .font(.caption2)
+                        .fontWeight(.semibold)
+                }
+                .foregroundColor(.white)
+                .frame(width: revealWidth)
+                .frame(maxHeight: .infinity)
+            }
+            .background(Color.red)
+            .clipShape(RoundedRectangle(cornerRadius: 16))
+            .opacity(offset < -4 ? 1 : 0)
+
+            // Card content slides on swipe
+            content
+                .offset(x: offset)
+                .gesture(
+                    DragGesture(minimumDistance: 15, coordinateSpace: .local)
+                        .onChanged { value in
+                            let h = value.translation.width
+                            let v = value.translation.height
+                            // Only handle predominantly horizontal drags
+                            guard abs(h) > abs(v) else { return }
+                            if h < 0 {
+                                offset = max(h, -revealWidth)
+                            } else {
+                                // Allow sliding back when already open
+                                offset = min(offset + h * 0.5, 0)
+                            }
+                        }
+                        .onEnded { value in
+                            withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
+                                if value.translation.width < -threshold {
+                                    offset = -revealWidth
+                                } else {
+                                    offset = 0
+                                }
+                            }
+                        }
+                )
+        }
+        .clipped()
+    }
+
+    private func performDelete() {
+        withAnimation(.easeIn(duration: 0.2)) {
+            offset = -UIScreen.main.bounds.width
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            onDelete()
+        }
     }
 }
 

@@ -47,7 +47,8 @@ struct EditCardView: View {
     @State private var selectedIconName: String? = "creditcard.fill"
     @State private var selectedIconColor: Color = .white
     @State private var selectedPassStyle: PassStyle = .generic
-    
+    @State private var selectedBarcodeFormat: String = "PKBarcodeFormatQR"
+
     init(card: Card, onSave: (() -> Void)? = nil) {
         self.card = card
         self.onSave = onSave
@@ -130,6 +131,7 @@ struct EditCardView: View {
                     secondaryColor: secondaryColor,
                     selectedIconName: selectedIconName ?? "creditcard.fill",
                     selectedIconColor: selectedIconColor,
+                    barcodeFormat: selectedBarcodeFormat,
                     selectedPassStyle: $selectedPassStyle,
                     onStyleChanged: handlePassStyleChange
                 )
@@ -164,6 +166,7 @@ struct EditCardView: View {
                     auxiliaryField1: $auxiliaryField1,
                     auxiliaryField2: $auxiliaryField2,
                     barcodeString: $barcodeString,
+                    barcodeFormat: $selectedBarcodeFormat,
                     passStyle: selectedPassStyle
                 )
                 
@@ -237,6 +240,9 @@ struct EditCardView: View {
         
         // Load pass style
         selectedPassStyle = card.passStyleType
+
+        // Load barcode format
+        selectedBarcodeFormat = card.barcodeFormat.isEmpty ? "PKBarcodeFormatQR" : card.barcodeFormat
     }
     
     private func handlePassStyleChange(_ newStyle: PassStyle) {
@@ -347,7 +353,7 @@ struct EditCardView: View {
                     cardName: cardName.isEmpty ? nil : cardName,
                     companyName: companyName.isEmpty ? nil : companyName,
                     barcodeString: barcodeString.isEmpty ? nil : barcodeString,
-                    barcodeFormat: card.barcodeFormat.isEmpty ? "Code128" : card.barcodeFormat,
+                    barcodeFormat: selectedBarcodeFormat.isEmpty ? "PKBarcodeFormatCode128" : selectedBarcodeFormat,
                     logoDescription: nil,
                     graphicDescription: nil,
                     expirationDate: expirationDate.isEmpty ? nil : expirationDate,
@@ -496,6 +502,8 @@ struct EditCardView: View {
         card.passDescription = cardName
         card.organizationName = companyName
         card.barcodeMessage = barcodeString
+        card.barcodeFormat = selectedBarcodeFormat
+        card.barcodeMessageEncoding = "iso-8859-1"
         card.expirationDate = expirationDate.isEmpty ? nil : expirationDate
         
         // Save the selected pass style
@@ -581,6 +589,7 @@ struct SwipeablePassPreviewSection: View {
     let secondaryColor: Color
     let selectedIconName: String
     let selectedIconColor: Color
+    let barcodeFormat: String
     @Binding var selectedPassStyle: PassStyle
     let onStyleChanged: (PassStyle) -> Void
     
@@ -740,7 +749,7 @@ struct SwipeablePassPreviewSection: View {
                     secondaryColor: secondaryColor,
                     selectedIconName: selectedIconName,
                     selectedIconColor: selectedIconColor,
-                    barcodeFormat: card.barcodeFormat
+                    barcodeFormat: barcodeFormat
                 )
             case .storeCard:
                 StoreCardPassPreview(
@@ -761,7 +770,7 @@ struct SwipeablePassPreviewSection: View {
                     secondaryColor: secondaryColor,
                     selectedIconName: selectedIconName,
                     selectedIconColor: selectedIconColor,
-                    barcodeFormat: card.barcodeFormat
+                    barcodeFormat: barcodeFormat
                 )
             case .coupon:
                 CouponPassPreview(
@@ -782,7 +791,7 @@ struct SwipeablePassPreviewSection: View {
                     secondaryColor: secondaryColor,
                     selectedIconName: selectedIconName,
                     selectedIconColor: selectedIconColor,
-                    barcodeFormat: card.barcodeFormat
+                    barcodeFormat: barcodeFormat
                 )
             case .eventTicket:
                 EventTicketPassPreview(
@@ -803,7 +812,7 @@ struct SwipeablePassPreviewSection: View {
                     secondaryColor: secondaryColor,
                     selectedIconName: selectedIconName,
                     selectedIconColor: selectedIconColor,
-                    barcodeFormat: card.barcodeFormat
+                    barcodeFormat: barcodeFormat
                 )
             }
         }
@@ -1287,30 +1296,15 @@ struct EventTicketPassPreview: View {
                     }
                     
                     if !currentBarcodeString.isEmpty {
-                        VStack(spacing: 8) {
-                            ZStack {
-                                RoundedRectangle(cornerRadius: 8).fill(.white)
-                                if barcodeFormat.lowercased().contains("qr") {
-                                    Image(systemName: "qrcode")
-                                        .font(.system(size: 50))
-                                        .foregroundColor(.black)
-                                } else {
-                                    HStack(spacing: 2) {
-                                        ForEach(0..<15, id: \.self) { _ in
-                                            Rectangle()
-                                                .fill(.black)
-                                                .frame(width: CGFloat.random(in: 1...4))
-                                        }
-                                    }
-                                    .frame(height: 50)
-                                }
-                            }
-                            .frame(height: 70)
-                            
+                        VStack(spacing: 6) {
+                            BarcodeImageView(message: currentBarcodeString, format: barcodeFormat)
+                                .frame(height: 70)
+
                             Text(currentBarcodeString)
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundColor(.white)
-                                .tracking(1)
+                                .font(.system(size: 11, weight: .regular, design: .monospaced))
+                                .foregroundColor(.white.opacity(0.9))
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.5)
                                 .shadow(color: .black.opacity(0.3), radius: 2)
                         }
                     }
@@ -1473,31 +1467,17 @@ struct PassFieldsView: View {
             Spacer()
             
             if !currentBarcodeString.isEmpty {
-                VStack(spacing: 8) {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 8).fill(.white)
-                        if barcodeFormat.lowercased().contains("qr") {
-                            Image(systemName: "qrcode")
-                                .font(.system(size: 60))
-                                .foregroundColor(.black)
-                        } else {
-                            HStack(spacing: 2) {
-                                ForEach(0..<20, id: \.self) { _ in
-                                    Rectangle()
-                                        .fill(.black)
-                                        .frame(width: CGFloat.random(in: 1...4))
-                                }
-                            }
-                            .frame(height: 60)
-                        }
-                    }
-                    .frame(height: 80)
-                    .padding(.horizontal, 20)
-                    
+                VStack(spacing: 6) {
+                    BarcodeImageView(message: currentBarcodeString, format: barcodeFormat)
+                        .frame(height: 80)
+                        .padding(.horizontal, 20)
+
                     Text(currentBarcodeString)
-                        .font(.system(size: 13, weight: .regular))
-                        .foregroundColor(secondaryColor)
-                        .tracking(1)
+                        .font(.system(size: 11, weight: .regular, design: .monospaced))
+                        .foregroundColor(secondaryColor.opacity(0.8))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.5)
+                        .padding(.horizontal, 20)
                 }
                 .padding(.bottom, 20)
             }
@@ -1757,6 +1737,7 @@ struct CardInformationSection: View {
     @Binding var auxiliaryField1: String
     @Binding var auxiliaryField2: String
     @Binding var barcodeString: String
+    @Binding var barcodeFormat: String
     let passStyle: PassStyle
     
     var body: some View {
@@ -1818,8 +1799,23 @@ struct CardInformationSection: View {
                     }
                 }
                 
-                FieldGroup(title: "Barcode/QR Code") {
-                    EditField(title: "Barcode Data", text: $barcodeString, placeholder: "Barcode or QR code number")
+                FieldGroup(title: "Barcode / QR Code") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Format")
+                            .font(.headline)
+                            .foregroundColor(.primary)
+                        Picker("Barcode Format", selection: $barcodeFormat) {
+                            Text("QR Code").tag("PKBarcodeFormatQR")
+                            Text("Standard Barcode").tag("PKBarcodeFormatCode128")
+                        }
+                        .pickerStyle(.segmented)
+                    }
+                    EditField(title: "Barcode Data", text: $barcodeString, placeholder: "Barcode or QR code data")
+                    if !barcodeString.isEmpty {
+                        BarcodeImageView(message: barcodeString, format: barcodeFormat)
+                            .frame(height: 80)
+                            .clipShape(RoundedRectangle(cornerRadius: 12))
+                    }
                 }
             }
         }
@@ -2064,5 +2060,74 @@ struct ImageCropperView: View {
         } else {
             onCrop(croppedUIImage)
         }
+    }
+}
+
+// MARK: - Barcode Image View
+
+/// Renders a real barcode or QR code image from a message string using Core Image filters.
+/// Supports all four PassKit barcode formats: QR, Code128, PDF417, Aztec.
+struct BarcodeImageView: View {
+    let message: String
+    let format: String
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 8).fill(.white)
+            if let barcodeImage = generateBarcode() {
+                Image(uiImage: barcodeImage)
+                    .interpolation(.none)
+                    .resizable()
+                    .scaledToFit()
+                    .padding(6)
+            }
+        }
+    }
+
+    private func generateBarcode() -> UIImage? {
+        guard !message.isEmpty else { return nil }
+
+        // PassKit requires iso-8859-1 encoding for barcode message data
+        guard let data = message.data(using: .isoLatin1) ?? message.data(using: .utf8) else { return nil }
+
+        let filterName: String
+        let isSquare: Bool
+
+        switch format {
+        case "PKBarcodeFormatQR":
+            filterName = "CIQRCodeGenerator"
+            isSquare = true
+        case "PKBarcodeFormatPDF417":
+            filterName = "CIPDF417BarcodeGenerator"
+            isSquare = false
+        case "PKBarcodeFormatAztec":
+            filterName = "CIAztecCodeGenerator"
+            isSquare = true
+        default: // PKBarcodeFormatCode128
+            filterName = "CICode128BarcodeGenerator"
+            isSquare = false
+        }
+
+        guard let filter = CIFilter(name: filterName) else { return nil }
+        filter.setValue(data, forKey: "inputMessage")
+
+        if filterName == "CIQRCodeGenerator" {
+            // Medium error correction — good balance of size vs. scanability
+            filter.setValue("M", forKey: "inputCorrectionLevel")
+        }
+
+        guard let outputImage = filter.outputImage else { return nil }
+
+        // Scale to a crisp pixel size (2× for retina sharpness)
+        let targetSize: CGSize = isSquare
+            ? CGSize(width: 200, height: 200)
+            : CGSize(width: 400, height: 100)
+        let scaleX = targetSize.width / outputImage.extent.width
+        let scaleY = targetSize.height / outputImage.extent.height
+        let scaled = outputImage.transformed(by: CGAffineTransform(scaleX: scaleX, y: scaleY))
+
+        let context = CIContext(options: [.useSoftwareRenderer: false])
+        guard let cgImage = context.createCGImage(scaled, from: scaled.extent) else { return nil }
+        return UIImage(cgImage: cgImage)
     }
 }

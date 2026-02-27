@@ -14,10 +14,12 @@ app.use(express.json({ limit: '10mb' }));
 
 // Routes
 const geminiRoutes = require('./routes/GeminiApi');
+const passRoutes   = require('./routes/PassGeneration');
 
 console.log('GeminiApi routes loaded:', typeof geminiRoutes);
 
 app.use('/api/gemini', geminiRoutes);
+app.use('/', passRoutes);
 
 // Health check endpoint
 app.get('/health', (req, res) => {

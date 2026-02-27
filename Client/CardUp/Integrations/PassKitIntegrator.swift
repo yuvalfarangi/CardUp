@@ -18,8 +18,9 @@ final class PassKitIntegrator {
     var isGenerating: Bool = false
     var error: String?
     
-    // Development mode flag - set to true to use mock passes without CloudFlare Worker
-    private let useMockPassGeneration = true
+    // Set to false now that the Node.js server signs real passes.
+    // Set back to true if you need to run without the server.
+    private let useMockPassGeneration = false
     
     // MARK: - Pass Generation
     
@@ -483,6 +484,29 @@ final class PassKitIntegrator {
             return "PKBarcodeFormatQR" // Default to QR
         }
     }
+
+    // MARK: - Wallet Library
+
+    /// Returns true if a pass with the given identifiers currently exists in Apple Wallet.
+    static func isPassInWallet(serialNumber: String, passTypeIdentifier: String) -> Bool {
+        guard PKPassLibrary.isPassLibraryAvailable() else { return false }
+        return PKPassLibrary().pass(
+            withPassTypeIdentifier: passTypeIdentifier,
+            serialNumber: serialNumber
+        ) != nil
+    }
+
+    /// Removes a pass from Apple Wallet if it exists.
+    static func removePassFromWallet(serialNumber: String, passTypeIdentifier: String) {
+        guard PKPassLibrary.isPassLibraryAvailable() else { return }
+        let library = PKPassLibrary()
+        if let pass = library.pass(
+            withPassTypeIdentifier: passTypeIdentifier,
+            serialNumber: serialNumber
+        ) {
+            library.removePass(pass)
+        }
+    }
 }
 
 // MARK: - Pass Payload Structures
@@ -588,19 +612,23 @@ struct PassKitRepresentable: UIViewControllerRepresentable {
     let passData: Data?
     let onSuccess: () -> Void
     let onError: (Error) -> Void
-    
+
     func makeUIViewController(context: Context) -> UIViewController {
         return UIViewController()
     }
-    
+
     func updateUIViewController(_ uiViewController: UIViewController, context: Context) {
         guard let passData = passData else { return }
-        
+        // Guard against presenting on top of an already-presented controller
+        guard uiViewController.presentedViewController == nil else { return }
+
         do {
             let passKitIntegrator = PassKitIntegrator()
             if let addPassVC = try passKitIntegrator.addPassToWallet(passData: passData) {
+                // Store the pass so the coordinator can verify it was actually added
+                context.coordinator.addedPass = try? PKPass(data: passData)
                 addPassVC.delegate = context.coordinator
-                
+
                 DispatchQueue.main.async {
                     uiViewController.present(addPassVC, animated: true)
                 }
@@ -609,23 +637,40 @@ struct PassKitRepresentable: UIViewControllerRepresentable {
             onError(error)
         }
     }
-    
+
     func makeCoordinator() -> Coordinator {
         return Coordinator(onSuccess: onSuccess, onError: onError)
     }
-    
+
     class Coordinator: NSObject, PKAddPassesViewControllerDelegate {
         let onSuccess: () -> Void
         let onError: (Error) -> Void
-        
+        /// Holds the real PKPass so we can verify it landed in the library.
+        var addedPass: PKPass?
+
         init(onSuccess: @escaping () -> Void, onError: @escaping (Error) -> Void) {
             self.onSuccess = onSuccess
             self.onError = onError
         }
-        
+
         func addPassesViewControllerDidFinish(_ controller: PKAddPassesViewController) {
             controller.dismiss(animated: true) {
-                self.onSuccess()
+                // Check whether the pass is actually in the library now.
+                // The delegate fires on both "Add" and "Cancel", so we verify.
+                if let pass = self.addedPass, PKPassLibrary.isPassLibraryAvailable() {
+                    // Small delay to let PassKit finish writing to the library.
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                        let library = PKPassLibrary()
+                        if library.pass(withPassTypeIdentifier: pass.passTypeIdentifier, 
+                                       serialNumber: pass.serialNumber) != nil {
+                            self.onSuccess()
+                        }
+                        // User cancelled — don't mark as added.
+                    }
+                } else {
+                    // No PKPass reference (e.g. real pass from future server) — call success as fallback.
+                    self.onSuccess()
+                }
             }
         }
     }
