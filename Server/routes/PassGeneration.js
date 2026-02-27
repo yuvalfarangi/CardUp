@@ -113,21 +113,21 @@ router.post('/generate-pass', async (req, res) => {
         // ---------------------------------------------------------------
         // Create the PKPass instance
         // ---------------------------------------------------------------
+        const certOptions = { wwdr, signerCert, signerKey };
+        if (process.env.CERT_PASSPHRASE) {
+            certOptions.signerKeyPassphrase = process.env.CERT_PASSPHRASE;
+        }
+
         const pass = new PKPass(
             images,
-            {
-                wwdr,
-                signerCert,
-                signerKey,
-                signerKeyPassphrase: process.env.CERT_PASSPHRASE || '',
-            },
+            certOptions,
             {
                 formatVersion:       payload.formatVersion  || 1,
                 passTypeIdentifier,
-                serialNumber:        payload.serialNumber,
+                serialNumber:        payload.serialNumber   || `card-${Date.now()}`,
                 teamIdentifier,
-                organizationName:    payload.organizationName,
-                description:         payload.description,
+                organizationName:    payload.organizationName || 'CardUp',
+                description:         payload.description    || 'Card',
                 ...(payload.logoText        && { logoText:        payload.logoText }),
                 foregroundColor:     hexToRgb(payload.foregroundColor),
                 backgroundColor:     hexToRgb(payload.backgroundColor),
@@ -163,7 +163,7 @@ router.post('/generate-pass', async (req, res) => {
         // Barcode
         // ---------------------------------------------------------------
         if (payload.barcodeMessage) {
-            pass.setBarcode({
+            pass.setBarcodes({
                 message:         payload.barcodeMessage,
                 format:          payload.barcodeFormat          || 'PKBarcodeFormatQR',
                 messageEncoding: payload.barcodeMessageEncoding || 'iso-8859-1',
@@ -171,9 +171,9 @@ router.post('/generate-pass', async (req, res) => {
         }
 
         // ---------------------------------------------------------------
-        // Sign and zip → return binary
+        // Sign and zip → return binary (synchronous in v3)
         // ---------------------------------------------------------------
-        const passBuffer = await pass.getAsBuffer();
+        const passBuffer = pass.getAsBuffer();
 
         res.setHeader('Content-Type', 'application/vnd.apple.pkpass');
         res.setHeader('Content-Disposition', 'attachment; filename="pass.pkpass"');

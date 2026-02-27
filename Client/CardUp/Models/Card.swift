@@ -344,7 +344,7 @@ extension Card {
     
     /// Whether this card has a valid generated pass
     var hasValidPass: Bool {
-        return pkpassData != nil && !isDraft
+        return pkpassData != nil
     }
     
     /// Display name for the card (organization name or description)

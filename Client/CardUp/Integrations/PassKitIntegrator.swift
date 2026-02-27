@@ -112,18 +112,26 @@ final class PassKitIntegrator {
         
         // Use mock pass generation for development/testing
         let passData: Data
-        
+
         if useMockPassGeneration {
             print("🔧 Using mock pass generation (CloudFlare Worker not configured)")
             passData = try await generateMockPassFromGeneric(payload: payload, card: card)
         } else {
-            print("🌐 Using CloudFlare Worker for pass generation")
+            print("🌐 Using server for pass generation")
             passData = try await requestGenericPassGeneration(payload: payload)
         }
-        
+
         // Store the generated pass data
         card.pkpassData = passData
-        
+
+        // Sync the card's identifiers with what the server actually signed.
+        // The server may override passTypeIdentifier from its env var, so we
+        // read it back from the signed PKPass to keep PKPassLibrary queries accurate.
+        if let signedPass = try? PKPass(data: passData) {
+            card.passTypeIdentifier = signedPass.passTypeIdentifier
+            card.serialNumber       = signedPass.serialNumber
+        }
+
         return passData
     }
     

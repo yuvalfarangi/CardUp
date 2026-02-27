@@ -34,6 +34,7 @@ struct EditCardView: View {
     @State private var regenerationError: String?
     @State private var showRegenerateAlert = false
     @State private var showAddToWallet = false
+    @State private var pendingWalletAdd = false
     @State private var showImagePicker = false
     @State private var showCropper = false
     @State private var uncroppedImage: UIImage?
@@ -368,6 +369,10 @@ struct EditCardView: View {
                     card.isDraft = false
                     try? modelContext.save()
                     isRegenerating = false
+                    if pendingWalletAdd {
+                        pendingWalletAdd = false
+                        showAddToWallet = true
+                    }
                 }
                 
             } catch {
@@ -548,11 +553,18 @@ struct EditCardView: View {
     }
     
     private func handleAddToWallet() {
+        // Mock data — prompt to regenerate
         if let passData = card.pkpassData,
            let jsonObject = try? JSONSerialization.jsonObject(with: passData) as? [String: Any],
            jsonObject["_mock"] as? Bool == true {
-            regenerationError = "Development Mode: Configure your CloudFlare Worker to enable Apple Wallet integration. Pass data is saved locally."
-            showRegenerateAlert = true
+            pendingWalletAdd = true
+            handleRegeneratePass()
+            return
+        }
+        // No pass data yet — generate first, then auto-add
+        if card.pkpassData == nil {
+            pendingWalletAdd = true
+            handleRegeneratePass()
             return
         }
         showAddToWallet = true
@@ -1848,27 +1860,25 @@ struct ActionButtonsSection: View {
     
     var body: some View {
         VStack(spacing: 16) {
-            if hasValidPass {
-                Button(action: onAddToWallet) {
-                    Label("Add to Wallet", systemImage: "wallet.pass.fill")
-                        .font(.headline)
-                        .fontWeight(.semibold)
-                        .foregroundColor(.white)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 56)
-                        .background(
-                            LinearGradient(
-                                colors: [.green, .green.opacity(0.8)],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
+            Button(action: onAddToWallet) {
+                Label("Add to Wallet", systemImage: "wallet.pass.fill")
+                    .font(.headline)
+                    .fontWeight(.semibold)
+                    .foregroundColor(.white)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 56)
+                    .background(
+                        LinearGradient(
+                            colors: [.green, .green.opacity(0.8)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
                         )
-                        .clipShape(Capsule())
-                        .glassEffect(.regular.interactive(), in: .capsule)
-                }
-                .shadow(color: .green.opacity(0.3), radius: 8, x: 0, y: 4)
-                .disabled(isRegenerating)
+                    )
+                    .clipShape(Capsule())
+                    .glassEffect(.regular.interactive(), in: .capsule)
             }
+            .shadow(color: .green.opacity(0.3), radius: 8, x: 0, y: 4)
+            .disabled(isRegenerating)
             
             Button(action: onRegeneratePass) {
                 HStack(spacing: 8) {

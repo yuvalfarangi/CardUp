@@ -637,7 +637,12 @@ final class ServerApi {
             if T.self == EmptyResponse.self {
                 return EmptyResponse() as! T
             }
-            
+
+            // Return raw Data without JSON decoding (e.g. binary .pkpass)
+            if T.self == Data.self {
+                return data as! T
+            }
+
             // Decode the response
             let decodedResponse = try decoder.decode(T.self, from: data)
             return decodedResponse

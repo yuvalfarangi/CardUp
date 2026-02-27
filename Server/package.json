@@ -6,7 +6,7 @@
     "morgan": "^1.10.1",
     "multer": "^2.0.2",
     "nodemon": "^3.1.14",
-    "passkit-generator": "^4.0.0",
+    "passkit-generator": "^3.5.7",
     "sharp": "^0.33.5"
   }
 }
