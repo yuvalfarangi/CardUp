@@ -27,39 +27,52 @@ final class PassKitIntegrator {
     func generateWalletPass(for card: Card, with extractedData: ExtractedCardData) async throws -> Data {
         isGenerating = true
         defer { isGenerating = false }
-        
-        // Create pass payload using the card's passStyle
-        let payload = PassPayload(
-            cardId: card.id.uuidString,
-            passType: card.passStyle, // Use the actual pass style from the card
-            organizationName: extractedData.companyName ?? (card.organizationName.isEmpty ? "Unknown Company" : card.organizationName),
-            description: extractedData.cardName ?? (card.passDescription.isEmpty ? "Loyalty Card" : card.passDescription),
-            logoText: extractedData.companyName ?? card.organizationName,
-            barcodeString: card.barcodeMessage,
-            barcodeFormat: card.barcodeFormat,
-            dominantColors: card.dominantColorsHex,
-            logoImageData: card.getLogoImageDataForPass(),
-            bannerImageData: card.bannerImageData,
-            membershipNumber: extractedData.membershipNumber,
-            expirationDate: extractedData.expirationDate,
-            additionalFields: extractedData.additionalText ?? []
+
+        let orgName = extractedData.companyName ?? (card.organizationName.isEmpty ? "Card" : card.organizationName)
+        let desc    = extractedData.cardName    ?? (card.passDescription.isEmpty   ? "Card" : card.passDescription)
+
+        let payload = GenericPassPayload(
+            formatVersion:          card.formatVersion,
+            passTypeIdentifier:     card.passTypeIdentifier,
+            serialNumber:           card.serialNumber.isEmpty ? card.id.uuidString : card.serialNumber,
+            teamIdentifier:         "UNKNOWN",
+            organizationName:       orgName,
+            description:            desc,
+            logoText:               orgName,
+            passStyle:              card.passStyle.isEmpty ? "generic" : card.passStyle,
+            barcodeMessage:         card.barcodeMessage,
+            barcodeFormat:          card.barcodeFormat.isEmpty ? "PKBarcodeFormatQR" : card.barcodeFormat,
+            barcodeMessageEncoding: card.barcodeMessageEncoding.isEmpty ? "iso-8859-1" : card.barcodeMessageEncoding,
+            foregroundColor:        card.foregroundColor.isEmpty ? "#FFFFFF" : card.foregroundColor,
+            backgroundColor:        card.backgroundColor.isEmpty ? "#1A1A2E" : card.backgroundColor,
+            labelColor:             card.labelColor,
+            headerFields:           card.headerFields,
+            primaryFields:          card.primaryFields,
+            secondaryFields:        card.secondaryFields,
+            auxiliaryFields:        card.auxiliaryFields,
+            backFields:             card.backFields,
+            logoImageData:          card.getLogoImageDataForPass(),
+            bannerImageData:        card.bannerImageData,
+            expirationDate:         extractedData.expirationDate ?? card.expirationDate,
+            relevantDate:           card.relevantDate
         )
-        
-        // Use mock pass generation for development/testing
-        // In production, you'll need to configure the CloudFlare Worker
+
         let passData: Data
-        
         if useMockPassGeneration {
-            print("🔧 Using mock pass generation (CloudFlare Worker not configured)")
-            passData = try await generateMockPassFromLegacy(payload: payload, card: card)
+            print("🔧 Using mock pass generation")
+            passData = try await generateMockPassFromGeneric(payload: payload, card: card)
         } else {
-            print("🌐 Using CloudFlare Worker for pass generation")
-            passData = try await requestPassGeneration(payload: payload)
+            print("🌐 Using server for pass generation")
+            passData = try await requestGenericPassGeneration(payload: payload)
         }
-        
-        // Store the generated pass data
+
         card.pkpassData = passData
-        
+
+        if let signedPass = try? PKPass(data: passData) {
+            card.passTypeIdentifier = signedPass.passTypeIdentifier
+            card.serialNumber       = signedPass.serialNumber
+        }
+
         return passData
     }
     
@@ -83,28 +96,31 @@ final class PassKitIntegrator {
             organizationName: card.organizationName,
             description: card.passDescription,
             logoText: card.logoText,
-            
+
+            // Pass style (explicit, not derived from identifier)
+            passStyle: card.passStyle.isEmpty ? "generic" : card.passStyle,
+
             // Barcode
             barcodeMessage: card.barcodeMessage,
             barcodeFormat: card.barcodeFormat,
             barcodeMessageEncoding: card.barcodeMessageEncoding,
-            
+
             // Colors
             foregroundColor: card.foregroundColor,
             backgroundColor: card.backgroundColor,
             labelColor: card.labelColor,
-            
+
             // Generic fields
             headerFields: card.headerFields,
             primaryFields: card.primaryFields,
             secondaryFields: card.secondaryFields,
             auxiliaryFields: card.auxiliaryFields,
             backFields: card.backFields,
-            
+
             // Images
             logoImageData: card.getLogoImageDataForPass(),
             bannerImageData: card.bannerImageData,
-            
+
             // Dates
             expirationDate: card.expirationDate,
             relevantDate: card.relevantDate
@@ -530,28 +546,32 @@ struct GenericPassPayload: Codable {
     let organizationName: String
     let description: String
     let logoText: String?
-    
+
+    // MARK: - Pass Style
+    /// Explicit pass style: "generic" | "storeCard" | "coupon" | "eventTicket"
+    let passStyle: String
+
     // MARK: - Barcode
     let barcodeMessage: String
     let barcodeFormat: String
     let barcodeMessageEncoding: String
-    
+
     // MARK: - Visual Design
     let foregroundColor: String
     let backgroundColor: String
     let labelColor: String?
-    
+
     // MARK: - Generic Pass Fields
     let headerFields: [PassField]
     let primaryFields: [PassField]
     let secondaryFields: [PassField]
     let auxiliaryFields: [PassField]
     let backFields: [PassField]
-    
+
     // MARK: - Images
     let logoImageData: Data?
     let bannerImageData: Data?
-    
+
     // MARK: - Dates
     let expirationDate: String?
     let relevantDate: String?
@@ -605,12 +625,18 @@ enum PassKitError: LocalizedError {
 // MARK: - SwiftUI Integration
 
 extension View {
-    func addPassToWallet(passData: Data?, onSuccess: @escaping () -> Void, onError: @escaping (Error) -> Void) -> some View {
+    func addPassToWallet(
+        passData: Data?,
+        onSuccess: @escaping () -> Void,
+        onError: @escaping (Error) -> Void,
+        onDismiss: @escaping () -> Void = {}
+    ) -> some View {
         self.background(
             PassKitRepresentable(
                 passData: passData,
                 onSuccess: onSuccess,
-                onError: onError
+                onError: onError,
+                onDismiss: onDismiss
             )
         )
     }
@@ -620,20 +646,27 @@ struct PassKitRepresentable: UIViewControllerRepresentable {
     let passData: Data?
     let onSuccess: () -> Void
     let onError: (Error) -> Void
+    let onDismiss: () -> Void
 
     func makeUIViewController(context: Context) -> UIViewController {
         return UIViewController()
     }
 
     func updateUIViewController(_ uiViewController: UIViewController, context: Context) {
-        guard let passData = passData else { return }
-        // Guard against presenting on top of an already-presented controller
+        guard let passData = passData else {
+            // passData cleared — reset so the next trigger can present again.
+            context.coordinator.presented = false
+            return
+        }
+        // Only present once per trigger (prevents re-presentation on SwiftUI redraws).
+        guard !context.coordinator.presented else { return }
         guard uiViewController.presentedViewController == nil else { return }
+
+        context.coordinator.presented = true
 
         do {
             let passKitIntegrator = PassKitIntegrator()
             if let addPassVC = try passKitIntegrator.addPassToWallet(passData: passData) {
-                // Store the pass so the coordinator can verify it was actually added
                 context.coordinator.addedPass = try? PKPass(data: passData)
                 addPassVC.delegate = context.coordinator
 
@@ -642,42 +675,47 @@ struct PassKitRepresentable: UIViewControllerRepresentable {
                 }
             }
         } catch {
+            context.coordinator.presented = false
             onError(error)
         }
     }
 
     func makeCoordinator() -> Coordinator {
-        return Coordinator(onSuccess: onSuccess, onError: onError)
+        return Coordinator(onSuccess: onSuccess, onError: onError, onDismiss: onDismiss)
     }
 
     class Coordinator: NSObject, PKAddPassesViewControllerDelegate {
         let onSuccess: () -> Void
         let onError: (Error) -> Void
+        let onDismiss: () -> Void
+        /// Prevents re-presentation on SwiftUI redraws while the sheet is active.
+        var presented: Bool = false
         /// Holds the real PKPass so we can verify it landed in the library.
         var addedPass: PKPass?
 
-        init(onSuccess: @escaping () -> Void, onError: @escaping (Error) -> Void) {
+        init(onSuccess: @escaping () -> Void, onError: @escaping (Error) -> Void, onDismiss: @escaping () -> Void) {
             self.onSuccess = onSuccess
             self.onError = onError
+            self.onDismiss = onDismiss
         }
 
         func addPassesViewControllerDidFinish(_ controller: PKAddPassesViewController) {
             controller.dismiss(animated: true) {
-                // Check whether the pass is actually in the library now.
-                // The delegate fires on both "Add" and "Cancel", so we verify.
                 if let pass = self.addedPass, PKPassLibrary.isPassLibraryAvailable() {
                     // Small delay to let PassKit finish writing to the library.
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                         let library = PKPassLibrary()
-                        if library.pass(withPassTypeIdentifier: pass.passTypeIdentifier, 
-                                       serialNumber: pass.serialNumber) != nil {
+                        if library.pass(withPassTypeIdentifier: pass.passTypeIdentifier,
+                                        serialNumber: pass.serialNumber) != nil {
                             self.onSuccess()
                         }
-                        // User cancelled — don't mark as added.
+                        // Reset trigger state whether the user added or cancelled.
+                        self.onDismiss()
                     }
                 } else {
-                    // No PKPass reference (e.g. real pass from future server) — call success as fallback.
+                    // No PKPass reference — call success as fallback, then reset.
                     self.onSuccess()
+                    self.onDismiss()
                 }
             }
         }
