@@ -925,8 +925,7 @@ struct LogoIconSection: View {
     }
 }
 
-// MARK: - Pass Type Previews
-
+// MARK: - Generic Pass Preview
 struct GenericPassPreview: View {
     let passWidth: CGFloat
     let passHeight: CGFloat
@@ -960,8 +959,9 @@ struct GenericPassPreview: View {
                 secondaryColor: secondaryColor,
                 selectedIconName: selectedIconName,
                 selectedIconColor: selectedIconColor,
-                fontScale: fontScale
+                fontScale: fontScale*1.5
             )
+
 
             Rectangle()
                 .fill(secondaryColor.opacity(0.12))
@@ -979,7 +979,7 @@ struct GenericPassPreview: View {
                 barcodeFormat: barcodeFormat,
                 primaryColor: primaryColor,
                 compact: false,
-                fontScale: fontScale
+                fontScale: fontScale*1.5
             )
         }
         .frame(width: passWidth, height: passHeight)
@@ -992,6 +992,7 @@ struct GenericPassPreview: View {
     }
 }
 
+// MARK: - Store Card Pass Preview
 struct StoreCardPassPreview: View {
     let passWidth: CGFloat
     let passHeight: CGFloat
@@ -1029,7 +1030,7 @@ struct StoreCardPassPreview: View {
                 secondaryColor: secondaryColor,
                 selectedIconName: selectedIconName,
                 selectedIconColor: selectedIconColor,
-                fontScale: fontScale
+                fontScale: fontScale*1.5
             )
 
             // Strip image with primary field overlaid on top.
@@ -1043,27 +1044,29 @@ struct StoreCardPassPreview: View {
                     primaryColor: primaryColor,
                     height: passHeight * 0.35
                 )
+                .frame(width: passWidth) // קיבוע רוחב התמונה
 
-                // Primary field on strip — 9pt label, 22pt light value (Apple PassKit spec)
                 if !displayMember.isEmpty {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("MEMBER")
-                            .font(.system(size: fontScale * 9, weight: .medium))
-                            .foregroundColor(hasStripImage ? Color.white.opacity(0.85) : secondaryColor.opacity(0.7))
-                            .tracking(0.5)
                         Text(displayMember)
-                            .font(.system(size: fontScale * 22, weight: .light))
+                            .font(.system(size: fontScale * 50, weight: .light)) // החזרתי לגודל המקורי
                             .foregroundColor(hasStripImage ? Color.white : secondaryColor)
                             .lineLimit(1)
-                            .minimumScaleFactor(0.6)
+                            .minimumScaleFactor(0.1)
                             .truncationMode(.tail)
+                            .allowsTightening(true)
                             .shadow(color: hasStripImage ? Color.black.opacity(0.4) : Color.clear, radius: 1)
+                            .frame(width: passWidth - 32, alignment: .leading) 
+                        
+                        Text("MEMBER")
+                            .font(.system(size: fontScale * 15, weight: .medium))
+                            .foregroundColor(hasStripImage ? Color.white.opacity(0.85) : secondaryColor.opacity(0.7))
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 16)
                     .padding(.top, 12)
                 }
             }
+            .frame(width: passWidth, height: passHeight * 0.35, alignment: .topLeading) // קיבוע ה-ZStack
 
             // Secondary + auxiliary + barcode below the strip (primary is on the strip above)
             PassBodyFieldsView(
@@ -1078,7 +1081,7 @@ struct StoreCardPassPreview: View {
                 primaryColor: primaryColor,
                 compact: true,
                 showPrimaryField: false,
-                fontScale: fontScale
+                fontScale: fontScale*1.5
             )
         }
         .frame(width: passWidth, height: passHeight)
@@ -1091,6 +1094,7 @@ struct StoreCardPassPreview: View {
     }
 }
 
+// MARK: - Coupon Pass Preview
 struct CouponPassPreview: View {
     let passWidth: CGFloat
     let passHeight: CGFloat
@@ -1128,7 +1132,7 @@ struct CouponPassPreview: View {
                 secondaryColor: secondaryColor,
                 selectedIconName: selectedIconName,
                 selectedIconColor: selectedIconColor,
-                fontScale: fontScale
+                fontScale: fontScale*1.5
             )
 
             // Strip image with primary field overlaid on top (same spec as storeCard: 375×144pt)
@@ -1144,17 +1148,17 @@ struct CouponPassPreview: View {
                 // Primary field on strip — 9pt label, 22pt light value (Apple PassKit spec)
                 if !displayMember.isEmpty {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("MEMBER")
-                            .font(.system(size: fontScale * 9, weight: .medium))
-                            .foregroundColor(hasStripImage ? Color.white.opacity(0.85) : secondaryColor.opacity(0.7))
-                            .tracking(0.5)
                         Text(displayMember)
-                            .font(.system(size: fontScale * 22, weight: .light))
+                            .font(.system(size: fontScale * 50, weight: .light))
                             .foregroundColor(hasStripImage ? Color.white : secondaryColor)
                             .lineLimit(1)
                             .minimumScaleFactor(0.6)
                             .truncationMode(.tail)
                             .shadow(color: hasStripImage ? Color.black.opacity(0.4) : Color.clear, radius: 1)
+                        Text("MEMBER")
+                            .font(.system(size: fontScale * 15, weight: .medium))
+                            .foregroundColor(hasStripImage ? Color.white.opacity(0.85) : secondaryColor.opacity(0.7))
+                            .tracking(0.5)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 16)
@@ -1164,11 +1168,7 @@ struct CouponPassPreview: View {
 
             // Perforated tear edge — separates strip from body on coupons
             HStack(spacing: 3) {
-                ForEach(0..<38, id: \.self) { _ in
-                    Circle()
-                        .fill(Color(.systemBackground))
-                        .frame(width: 3, height: 3)
-                }
+
             }
             .frame(height: 6)
             .frame(maxWidth: .infinity)
@@ -1187,7 +1187,7 @@ struct CouponPassPreview: View {
                 primaryColor: primaryColor,
                 compact: true,
                 showPrimaryField: false,
-                fontScale: fontScale
+                fontScale: fontScale*2
             )
         }
         .frame(width: passWidth, height: passHeight)
@@ -1200,6 +1200,7 @@ struct CouponPassPreview: View {
     }
 }
 
+// MARK: - Event Ticket Pass Preview
 struct EventTicketPassPreview: View {
     let passWidth: CGFloat
     let passHeight: CGFloat
@@ -1254,12 +1255,12 @@ struct EventTicketPassPreview: View {
                 HStack(alignment: .center, spacing: 8) {
                     // Logo icon — 26pt symbol, 44×44 frame (Apple PassKit spec)
                     Image(systemName: selectedIconName)
-                        .font(.system(size: fontScale * 26, weight: .regular))
+                        .font(.system(size: fontScale * 40, weight: .regular))
                         .foregroundColor(secondaryColor)
                         .frame(width: 44, height: 44)
 
                     Text(displayCompany)
-                        .font(.system(size: fontScale * 13, weight: .semibold))
+                        .font(.system(size: fontScale * 20, weight: .semibold))
                         .foregroundColor(secondaryColor)
                         .lineLimit(1)
                         .truncationMode(.tail)
@@ -1357,13 +1358,7 @@ struct EventTicketPassPreview: View {
                         BarcodeImageView(message: currentBarcodeString, format: barcodeFormat)
                             .frame(height: 65)
                             .padding(.horizontal, 20)
-                        Text(currentBarcodeString)
-                            .font(.system(size: fontScale * 9, weight: .regular, design: .monospaced))
-                            .foregroundColor(secondaryColor.opacity(0.85))
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.5)
-                            .truncationMode(.middle)
-                            .padding(.horizontal, 20)
+                            .padding(.bottom,20)
                     }
                     .padding(.bottom, 16)
                 }
@@ -1382,6 +1377,7 @@ struct EventTicketPassPreview: View {
 
 // MARK: - Shared Pass Components
 
+// MARK: Pass Header Row
 /// Reusable header row matching Apple Wallet's exact layout:
 /// Logo icon + org name on LEFT, header field (value top / label bottom) on RIGHT.
 struct PassHeaderRow: View {
@@ -1432,6 +1428,7 @@ struct PassHeaderRow: View {
     }
 }
 
+// MARK: Strip Image View
 struct StripImageView: View {
     let selectedBackgroundImage: UIImage?
     let isBannerImageRemoved: Bool
@@ -1466,6 +1463,7 @@ struct StripImageView: View {
     }
 }
 
+// MARK: Pass Body Fields View
 /// Pass body fields: primary (large) → secondary row → auxiliary row → barcode.
 /// Matches Apple Wallet's front-of-pass field layout.
 struct PassBodyFieldsView: View {
@@ -1566,13 +1564,7 @@ struct PassBodyFieldsView: View {
                     BarcodeImageView(message: currentBarcodeString, format: barcodeFormat)
                         .frame(height: compact ? 60 : 70)
                         .padding(.horizontal, 20)
-                    Text(currentBarcodeString)
-                        .font(.system(size: fontScale * 9, weight: .regular, design: .monospaced))
-                        .foregroundColor(secondaryColor.opacity(0.7))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.5)
-                        .truncationMode(.middle)
-                        .padding(.horizontal, 20)
+                        .padding(.bottom, 20)
                 }
                 .padding(.bottom, 14)
             }
@@ -2252,4 +2244,39 @@ struct BarcodeImageView: View {
         guard let cgImage = context.createCGImage(scaled, from: scaled.extent) else { return nil }
         return UIImage(cgImage: cgImage)
     }
+}
+
+#Preview {
+    let config = ModelConfiguration(isStoredInMemoryOnly: true)
+    let container = try! ModelContainer(for: Card.self, configurations: config)
+    
+    let studentCard = Card(
+        organizationName: "המכללה האקדמית להנדסה ע\"ש סמי שמעון",
+        passDescription: "כרטיס סטודנט",
+        foregroundColor: "#FFFFFF",
+        backgroundColor: "#105973",
+        barcodeMessage: "324268648",
+        barcodeFormat: "PKBarcodeFormatCode128",
+        passStyle: PassStyle.generic.rawValue,
+        isDraft: false
+    )
+    
+    studentCard.updatePrimaryFields([
+        PassField(key: "studentName", label: "שם בעל הכרטיס", value: "Farangi Yuval")
+    ])
+    
+    studentCard.updateSecondaryFields([
+        PassField(key: "idNumber", label: "תעודת זהות", value: "324268648"),
+        PassField(key: "hebrewName", label: "שם מלא (עברית)", value: "פאראנגי יובל חי")
+    ])
+    
+    studentCard.updateAuxiliaryFields([
+        PassField(key: "academicYear", label: "תשפו", value: "2025-2026"),
+        PassField(key: "academicInstitution", label: "שם המוסד האקדמי", value: "סמי שמעון")
+    ])
+    
+    container.mainContext.insert(studentCard)
+    
+    return EditCardView(card: studentCard, onSave: nil)
+        .modelContainer(container)
 }
