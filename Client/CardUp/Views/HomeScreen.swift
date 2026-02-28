@@ -167,14 +167,24 @@ struct CardSection: View {
                     .background(.secondary.opacity(0.1))
                     .clipShape(Capsule())
             }
+            .padding(.horizontal, 16)
 
-            LazyVStack(spacing: 12) {
+            List {
                 ForEach(cards) { card in
-                    SwipeToDeleteWrapper(onDelete: { onDelete(card) }) {
-                        CardRowView(card: card, isWalletSection: isWalletSection)
+                    CardRowView(card: card, isWalletSection: isWalletSection)
+                        .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+                        .listRowSeparator(.hidden)
+                        .listRowBackground(Color.clear)
+                }
+                .onDelete { indexSet in
+                    indexSet.forEach { index in
+                        onDelete(cards[index])
                     }
                 }
             }
+            .listStyle(.plain)
+            .scrollDisabled(true)
+            .frame(height: CGFloat(cards.count) * 93) // Approximate height per row
         }
     }
 }
@@ -374,81 +384,6 @@ struct CardButtonStyle: ButtonStyle {
             .scaleEffect(configuration.isPressed ? 0.98 : 1.0)
             .opacity(configuration.isPressed ? 0.9 : 1.0)
             .animation(.easeInOut(duration: 0.1), value: configuration.isPressed)
-    }
-}
-
-// MARK: - Swipe to Delete Wrapper
-
-struct SwipeToDeleteWrapper<Content: View>: View {
-    let onDelete: () -> Void
-    let content: Content
-
-    @State private var offset: CGFloat = 0
-    private let revealWidth: CGFloat = 80
-    private let threshold: CGFloat = 50
-
-    init(onDelete: @escaping () -> Void, @ViewBuilder content: () -> Content) {
-        self.onDelete = onDelete
-        self.content = content()
-    }
-
-    var body: some View {
-        ZStack(alignment: .trailing) {
-            // Delete button revealed behind the card
-            Button(action: performDelete) {
-                VStack(spacing: 4) {
-                    Image(systemName: "trash.fill")
-                        .font(.body)
-                    Text("Delete")
-                        .font(.caption2)
-                        .fontWeight(.semibold)
-                }
-                .foregroundColor(.white)
-                .frame(width: revealWidth)
-                .frame(maxHeight: .infinity)
-            }
-            .background(Color.red)
-            .clipShape(RoundedRectangle(cornerRadius: 16))
-            .opacity(offset < -4 ? 1 : 0)
-
-            // Card content slides on swipe
-            content
-                .offset(x: offset)
-                .gesture(
-                    DragGesture(minimumDistance: 15, coordinateSpace: .local)
-                        .onChanged { value in
-                            let h = value.translation.width
-                            let v = value.translation.height
-                            // Only handle predominantly horizontal drags
-                            guard abs(h) > abs(v) else { return }
-                            if h < 0 {
-                                offset = max(h, -revealWidth)
-                            } else {
-                                // Allow sliding back when already open
-                                offset = min(offset + h * 0.5, 0)
-                            }
-                        }
-                        .onEnded { value in
-                            withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
-                                if value.translation.width < -threshold {
-                                    offset = -revealWidth
-                                } else {
-                                    offset = 0
-                                }
-                            }
-                        }
-                )
-        }
-        .clipped()
-    }
-
-    private func performDelete() {
-        withAnimation(.easeIn(duration: 0.2)) {
-            offset = -UIScreen.main.bounds.width
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-            onDelete()
-        }
     }
 }
 

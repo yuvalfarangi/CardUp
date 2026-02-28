@@ -77,6 +77,10 @@ struct EditCardView: View {
             .onChange(of: selectedBackgroundImage) { _, newValue in
                 handleBackgroundImageChange(newValue)
             }
+            .onChange(of: secondaryColor) { _, newValue in
+                // Auto-sync icon color with secondary color (user can override in icon picker)
+                selectedIconColor = newValue
+            }
             .addPassToWallet(
                 passData: showAddToWallet ? card.pkpassData : nil,
                 onSuccess: handleWalletSuccess,
@@ -239,6 +243,9 @@ struct EditCardView: View {
     
         // Load icon settings - use existing SF Symbol or default
         selectedIconName = card.logoSFSymbol ?? "creditcard.fill"
+        
+        // Auto-sync icon color with secondary color (unless manually customized)
+        // If the saved icon color matches the old foreground color, sync it
         selectedIconColor = card.logoColor
         
         // Load pass style
@@ -915,9 +922,14 @@ struct LogoIconSection: View {
                 Image(systemName: "info.circle")
                     .foregroundColor(.blue)
                     .font(.caption)
-                Text("Using SF Symbol: \(selectedIconName)")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Using SF Symbol: \(selectedIconName)")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    Text("Icon color auto-syncs with text color (can override in picker)")
+                        .font(.caption2)
+                        .foregroundColor(.secondary.opacity(0.8))
+                }
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
