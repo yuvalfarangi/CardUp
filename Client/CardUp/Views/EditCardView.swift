@@ -183,6 +183,7 @@ struct EditCardView: View {
             }
             .padding(.horizontal, 16)
             .padding(.top, 8)
+            .containerRelativeFrame(.horizontal)
         }
     }
     
@@ -685,7 +686,8 @@ struct SwipeablePassPreviewSection: View {
                             .animation(.spring(response: 0.4, dampingFraction: 0.8), value: dragOffset)
                     }
                 }
-                .frame(width: geometry.size.width, height: passHeight)
+                .frame(width: passWidth, height: passHeight)
+                .clipped()
                 .gesture(
                     DragGesture()
                         .onChanged { value in
